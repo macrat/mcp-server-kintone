@@ -207,10 +207,42 @@ type ToolsCallResult struct {
 	IsError bool      `json:"isError"`
 }
 
+type Permissions struct {
+	Read   bool `json:"read"`
+	Write  bool `json:"write"`
+	Delete bool `json:"delete"`
+}
+
+func (p *Permissions) UnmarshalJSON(data []byte) error {
+	var tmp JsonMap
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+
+	if v, ok := tmp["read"]; ok {
+		p.Read = v.(bool)
+	} else {
+		p.Read = true // read is default true
+	}
+	if v, ok := tmp["write"]; ok {
+		p.Write = v.(bool)
+	} else {
+		p.Write = false
+	}
+	if v, ok := tmp["delete"]; ok {
+		p.Delete = v.(bool)
+	} else {
+		p.Delete = false
+	}
+
+	return nil
+}
+
 type KintoneAppInfo struct {
-	ID          int    `json:"appID"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	ID          int         `json:"appID"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Permissions Permissions `json:"permissions"`
 }
 
 type KintoneHandlers struct {
@@ -312,6 +344,21 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 				},
 			},
 			{
+				Name:        "createRecord",
+				Description: "Create a new record in the specified app. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
+				InputSchema: JsonMap{
+					"type":     "object",
+					"required": []string{"appID", "record"},
+					"properties": JsonMap{
+						"appID": JsonMap{
+							"type":        "number",
+							"description": "The app ID to create a record in.",
+						},
+						"record": kintoneRecord,
+					},
+				},
+			},
+			{
 				Name:        "readRecords",
 				Description: "Read records from the specified app. Response includes the record ID, record number, and record data. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
 				InputSchema: JsonMap{
@@ -338,21 +385,6 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 				},
 			},
 			{
-				Name:        "createRecord",
-				Description: "Create a new record in the specified app. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
-				InputSchema: JsonMap{
-					"type":     "object",
-					"required": []string{"appID", "record"},
-					"properties": JsonMap{
-						"appID": JsonMap{
-							"type":        "number",
-							"description": "The app ID to create a record in.",
-						},
-						"record": kintoneRecord,
-					},
-				},
-			},
-			{
 				Name:        "updateRecord",
 				Description: "Update the specified record in the specified app. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool and check which record to update by using 'readRecords' tool.",
 				InputSchema: JsonMap{
@@ -371,6 +403,24 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 					},
 				},
 			},
+			{
+				Name:        "deleteRecord",
+				Description: "Delete the specified record in the specified app. Before use this tool, you should check which record to delete by using 'readRecords' tool. This operation is unrecoverable, so make sure that the user really want to delete the record.",
+				InputSchema: JsonMap{
+					"type":     "object",
+					"required": []string{"appID", "recordID"},
+					"properties": JsonMap{
+						"appID": JsonMap{
+							"type":        "number",
+							"description": "The app ID to delete a record from.",
+						},
+						"recordID": JsonMap{
+							"type":        "number",
+							"description": "The record ID to delete.",
+						},
+					},
+				},
+			},
 		},
 	}, nil
 }
@@ -386,24 +436,46 @@ func (h *KintoneHandlers) ToolsCall(params json.RawMessage) (any, *ErrorBody) {
 		return h.ListApps(req.Arguments)
 	case "readAppInfo":
 		return h.ReadAppInfo(req.Arguments)
-	case "readRecords":
-		return h.ReadRecords(req.Arguments)
 	case "createRecord":
 		return h.CreateRecord(req.Arguments)
+	case "readRecords":
+		return h.ReadRecords(req.Arguments)
 	case "updateRecord":
 		return h.UpdateRecord(req.Arguments)
+	case "deleteRecord":
+		return h.DeleteRecord(req.Arguments)
 	default:
 		return nil, NewError(InvalidParams, "Unknown tool name: %s", req.Name)
 	}
 }
 
-func (h *KintoneHandlers) isAppExported(id int) bool {
+func (h *KintoneHandlers) getApp(id int) *KintoneAppInfo {
 	for _, app := range h.Apps {
 		if app.ID == id {
-			return true
+			return &app
 		}
 	}
-	return false
+	return nil
+}
+
+type Perm string
+
+const (
+	PermSomething Perm = "do something"
+	PermRead      Perm = "read"
+	PermWrite     Perm = "write"
+	PermDelete    Perm = "delete"
+)
+
+func (h *KintoneHandlers) checkPermissions(id int, p Perm) *ErrorBody {
+	app := h.getApp(id)
+	if app == nil {
+		return NewError(InvalidParams, "App ID %d is not found or not allowed to access", id)
+	}
+	if (p == PermRead && app.Permissions.Read) || (p == PermWrite && app.Permissions.Write) || (p == PermDelete && app.Permissions.Delete) || (p == PermSomething) {
+		return nil
+	}
+	return NewError(InvalidParams, "Permission denied to %s records in app ID %d", p, id)
 }
 
 func (h *KintoneHandlers) ListApps(params json.RawMessage) (any, *ErrorBody) {
@@ -425,9 +497,12 @@ func (h *KintoneHandlers) ReadAppInfo(params json.RawMessage) (any, *ErrorBody) 
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
 	}
+	if req.AppID == 0 {
+		return nil, NewError(InvalidParams, "Argument 'appID' is required")
+	}
 
-	if !h.isAppExported(req.AppID) {
-		return nil, NewError(InvalidParams, "App ID %d is not found or not exported", req.AppID)
+	if err := h.checkPermissions(req.AppID, PermSomething); err != nil {
+		return nil, err
 	}
 
 	hreq, err := http.NewRequest("GET", fmt.Sprintf("%s/k/v1/app/form/fields.json?app=%d", h.URL, req.AppID), nil)
@@ -470,84 +545,20 @@ func (h *KintoneHandlers) ReadAppInfo(params json.RawMessage) (any, *ErrorBody) 
 	}, nil
 }
 
-func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) {
-	var req struct {
-		AppID  int    `json:"appID"`
-		Query  string `json:"query"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
-	}
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
-	}
-
-	if req.Limit < 0 || req.Limit > 500 {
-		return nil, NewError(InvalidParams, "Limit must be between 1 and 500")
-	} else if req.Limit == 0 {
-		req.Limit = 10
-	}
-
-	if req.Offset < 0 || req.Offset > 10000 {
-		return nil, NewError(InvalidParams, "Offset must be between 0 and 10000")
-	}
-
-	if !h.isAppExported(req.AppID) {
-		return nil, NewError(InvalidParams, "App ID %d is not found or not exported", req.AppID)
-	}
-
-	query := url.Values{}
-	query.Set("app", fmt.Sprintf("%d", req.AppID))
-	query.Set("query", req.Query)
-	query.Set("limit", fmt.Sprintf("%d", req.Limit))
-	query.Set("offset", fmt.Sprintf("%d", req.Offset))
-	query.Set("totalCount", "true")
-
-	hreq, err := http.NewRequest("GET", fmt.Sprintf("%s/k/v1/records.json?%s", h.URL, query.Encode()), nil)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to create HTTP request: %v", err)
-	}
-	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
-	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
-
-	hres, err := http.DefaultClient.Do(hreq)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to send HTTP request: %v", err)
-	}
-	defer hres.Body.Close()
-
-	if hres.StatusCode != http.StatusOK {
-		mesg, _ := io.ReadAll(hres.Body)
-		return nil, NewError(InternalError, "HTTP request failed: %s: %s", hres.Status, mesg)
-	}
-
-	var result JsonMap
-	if err := json.NewDecoder(hres.Body).Decode(&result); err != nil {
-		return nil, NewError(InternalError, "Failed to parse response: %v", err)
-	}
-
-	resp, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to marshal response: %v", err)
-	}
-	return ToolsCallResult{
-		Content: []Content{
-			{Type: "text", Text: string(resp)},
-		},
-	}, nil
-}
-
 func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
 		AppID  int `json:"appID"`
 		Record any `json:"record"`
 	}
-
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
 	}
+	if req.AppID == 0 || req.Record == nil {
+		return nil, NewError(InvalidParams, "Arguments 'appID' and 'record' are required")
+	}
 
-	if !h.isAppExported(req.AppID) {
-		return nil, NewError(InvalidParams, "App ID %d is not found or not exported", req.AppID)
+	if err := h.checkPermissions(req.AppID, PermWrite); err != nil {
+		return nil, err
 	}
 
 	body := JsonMap{
@@ -600,19 +611,90 @@ func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody)
 	}, nil
 }
 
+func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) {
+	var req struct {
+		AppID  int    `json:"appID"`
+		Query  string `json:"query"`
+		Limit  int    `json:"limit"`
+		Offset int    `json:"offset"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
+	}
+	if req.AppID == 0 {
+		return nil, NewError(InvalidParams, "Argument 'appID' is required")
+	}
+
+	if req.Limit < 0 || req.Limit > 500 {
+		return nil, NewError(InvalidParams, "Limit must be between 1 and 500")
+	} else if req.Limit == 0 {
+		req.Limit = 10
+	}
+
+	if req.Offset < 0 || req.Offset > 10000 {
+		return nil, NewError(InvalidParams, "Offset must be between 0 and 10000")
+	}
+
+	if err := h.checkPermissions(req.AppID, PermRead); err != nil {
+		return nil, err
+	}
+
+	query := url.Values{}
+	query.Set("app", fmt.Sprintf("%d", req.AppID))
+	query.Set("query", req.Query)
+	query.Set("limit", fmt.Sprintf("%d", req.Limit))
+	query.Set("offset", fmt.Sprintf("%d", req.Offset))
+	query.Set("totalCount", "true")
+
+	hreq, err := http.NewRequest("GET", fmt.Sprintf("%s/k/v1/records.json?%s", h.URL, query.Encode()), nil)
+	if err != nil {
+		return nil, NewError(InternalError, "Failed to create HTTP request: %v", err)
+	}
+	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
+	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
+
+	hres, err := http.DefaultClient.Do(hreq)
+	if err != nil {
+		return nil, NewError(InternalError, "Failed to send HTTP request: %v", err)
+	}
+	defer hres.Body.Close()
+
+	if hres.StatusCode != http.StatusOK {
+		mesg, _ := io.ReadAll(hres.Body)
+		return nil, NewError(InternalError, "HTTP request failed: %s: %s", hres.Status, mesg)
+	}
+
+	var result JsonMap
+	if err := json.NewDecoder(hres.Body).Decode(&result); err != nil {
+		return nil, NewError(InternalError, "Failed to parse response: %v", err)
+	}
+
+	resp, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return nil, NewError(InternalError, "Failed to marshal response: %v", err)
+	}
+	return ToolsCallResult{
+		Content: []Content{
+			{Type: "text", Text: string(resp)},
+		},
+	}, nil
+}
+
 func (h *KintoneHandlers) UpdateRecord(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
 		AppID    int `json:"appID"`
 		RecordID int `json:"recordID"`
 		Record   any `json:"record"`
 	}
-
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
 	}
+	if req.AppID == 0 || req.RecordID == 0 || req.Record == nil {
+		return nil, NewError(InvalidParams, "Arguments 'appID', 'recordID', and 'record' are required")
+	}
 
-	if !h.isAppExported(req.AppID) {
-		return nil, NewError(InvalidParams, "App ID %d is not found or not exported", req.AppID)
+	if err := h.checkPermissions(req.AppID, PermWrite); err != nil {
+		return nil, err
 	}
 
 	body := JsonMap{
@@ -651,10 +733,101 @@ func (h *KintoneHandlers) UpdateRecord(params json.RawMessage) (any, *ErrorBody)
 	}, nil
 }
 
+func (h *KintoneHandlers) readSingleRecord(appID, recordID int) (JsonMap, error) {
+	hreq, err := http.NewRequest("GET", fmt.Sprintf("%s/k/v1/record.json?app=%d&id=%d", h.URL, appID, recordID), nil)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create HTTP request: %v", err)
+	}
+	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
+	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
+
+	hres, err := http.DefaultClient.Do(hreq)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to send HTTP request: %v", err)
+	}
+	defer hres.Body.Close()
+
+	if hres.StatusCode != http.StatusOK {
+		mesg, _ := io.ReadAll(hres.Body)
+		return nil, fmt.Errorf("HTTP request failed: %s: %s", hres.Status, mesg)
+	}
+
+	var result struct {
+		Record JsonMap `json:"record"`
+	}
+	if err := json.NewDecoder(hres.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("Failed to parse response: %v", err)
+	}
+
+	return result.Record, nil
+}
+
+func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody) {
+	var req struct {
+		AppID    int `json:"appID"`
+		RecordID int `json:"recordID"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
+	}
+	if req.AppID == 0 || req.RecordID == 0 {
+		return nil, NewError(InvalidParams, "Arguments 'appID' and 'recordID' are required")
+	}
+
+	if err := h.checkPermissions(req.AppID, PermDelete); err != nil {
+		return nil, err
+	}
+
+	var deletedRecord JsonMap
+	if h.checkPermissions(req.AppID, PermRead) == nil {
+		var err error
+		deletedRecord, err = h.readSingleRecord(req.AppID, req.RecordID)
+		if err != nil {
+			return nil, NewError(InternalError, "Failed to read record: %v", err)
+		}
+	}
+
+	hreq, err := http.NewRequest("DELETE", fmt.Sprintf("%s/k/v1/records.json?app=%d&ids[0]=%d", h.URL, req.AppID, req.RecordID), nil)
+	if err != nil {
+		return nil, NewError(InternalError, "Failed to create HTTP request: %v", err)
+	}
+	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
+	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
+
+	hres, err := http.DefaultClient.Do(hreq)
+	if err != nil {
+		return nil, NewError(InternalError, "Failed to send HTTP request: %v", err)
+	}
+
+	if hres.StatusCode != http.StatusOK {
+		mesg, _ := io.ReadAll(hres.Body)
+		return nil, NewError(InternalError, "HTTP request failed: %s: %s", hres.Status, mesg)
+	}
+
+	result := JsonMap{
+		"success": true,
+	}
+	if deletedRecord != nil {
+		result["deletedRecord"] = deletedRecord
+	}
+
+	resp, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return nil, NewError(InternalError, "Failed to marshal response: %v", err)
+	}
+
+	return ToolsCallResult{
+		Content: []Content{
+			{Type: "text", Text: string(resp)},
+		},
+	}, nil
+}
+
 type KintoneAppConfig struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	ID          int         `json:"id"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Permissions Permissions `json:"permissions"`
 }
 
 type Configuration struct {
@@ -702,6 +875,7 @@ func main() {
 				ID:          app.ID,
 				Name:        app.Name,
 				Description: app.Description,
+				Permissions: app.Permissions,
 			})
 		}
 	}

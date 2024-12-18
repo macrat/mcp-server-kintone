@@ -11,7 +11,7 @@ This server allows you to explore and manipulate kintone data using AI tools suc
 Pre-build binaries are not available yet. Please build from source.
 
 
-### 2. Configure mcp-kintone-server
+### 2. Configure mcp-server-kintone
 
 Create a configuration file like below:
 
@@ -26,6 +26,11 @@ Create a configuration file like below:
             "id": "<your-app-id>",
             "name": "<your-app-name>",
             "description": "<your-app-description>"
+            "permissions": {
+                "read": true,
+                "write": false,
+                "delete": false
+            }
         }
     ]
 }
@@ -36,6 +41,8 @@ And at least of `username` and `password` or `token` is required.
 
 Please make sure that all apps you want to access are included in the `apps` list.
 For security reasons, this server does not allow clients to access apps that are not included in the `apps` list.
+
+Permissions are optional. In default, only read permission is granted.
 
 
 ### 3. Configure MCP client like Claude Desktop
@@ -48,7 +55,7 @@ For Claude Desktop, you can use the following configuration:
 {
   "mcpServers": {
     "kintone": {
-      "command": "C:\\path\\to\\mcp-kintone-server.exe",
+      "command": "C:\\path\\to\\mcp-server-kintone.exe",
       "args": [
         "C:\\path\\to\\configuration.json"
       ]
