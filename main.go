@@ -396,6 +396,13 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 							"type":        "string",
 							"description": "The query to filter records. Query format is the same as kintone's query format. For example, 'field1 = \"value1\" and (field2 like \"value2\"' or field3 not in (\"value3.1\",\"value3.2\")) and date > \"2006-01-02\"'.",
 						},
+						"fields": JsonMap{
+							"type":        "array",
+							"description": "The field codes to include in the response. Default is all fields.",
+							"items": JsonMap{
+								"type": "string",
+							},
+						},
 						"limit": JsonMap{
 							"type":        "number",
 							"description": "The maximum number of records to read. Default is 10, maximum is 500.",
@@ -569,7 +576,6 @@ func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody)
 		"app":    req.AppID,
 		"record": req.Record,
 	}
-
 	var record struct {
 		ID string `json:"id"`
 	}
@@ -583,10 +589,11 @@ func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody)
 
 func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
-		AppID  int    `json:"appID"`
-		Query  string `json:"query"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		AppID  int      `json:"appID"`
+		Query  string   `json:"query"`
+		Limit  int      `json:"limit"`
+		Fields []string `json:"fields"`
+		Offset int      `json:"offset"`
 	}
 	if errBody := UnmarshalJSON(params, &req); errBody != nil {
 		return nil, errBody
@@ -609,15 +616,17 @@ func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) 
 		return nil, err
 	}
 
-	query := url.Values{}
-	query.Set("app", fmt.Sprintf("%d", req.AppID))
-	query.Set("query", req.Query)
-	query.Set("limit", fmt.Sprintf("%d", req.Limit))
-	query.Set("offset", fmt.Sprintf("%d", req.Offset))
-	query.Set("totalCount", "true")
+	httpReq := JsonMap{
+		"app":        req.AppID,
+		"query":      req.Query,
+		"limit":      req.Limit,
+		"offset":     req.Offset,
+		"fields":     req.Fields,
+		"totalCount": true,
+	}
 
 	var records JsonMap
-	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/records.json?%s", h.URL, query.Encode()), nil, &records)
+	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/records.json", h.URL), httpReq, &records)
 	return records, errBody
 }
 
