@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 )
 
@@ -226,34 +225,44 @@ func UnmarshalJSON[T any](data []byte, target *T) *ErrorBody {
 	return nil
 }
 
-type KintoneAppInfo struct {
-	ID          int         `json:"appID"`
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Permissions Permissions `json:"permissions"`
+type KintoneAppDetail struct {
+	AppID            string      `json:"appID"`
+	Name             string      `json:"name"`
+	Description      string      `json:"description,omitempty"`
+	DescriptionForAI string      `json:"description_for_ai,omitempty"`
+	Properties       JsonMap     `json:"properties,omitempty"`
+	CreatedAt        string      `json:"createdAt"`
+	ModifiedAt       string      `json:"modifiedAt"`
+	Permissions      Permissions `json:"permissions"`
 }
 
 type KintoneHandlers struct {
 	URL   string
 	Auth  string
 	Token string
-	Apps  []KintoneAppInfo
+	Apps  []KintoneAppConfig
 }
 
 func SendHTTP(h *KintoneHandlers, method, url string, body any, result any) *ErrorBody {
-	reqBody, err := json.Marshal(body)
-	if err != nil {
-		return NewError(InternalError, "Failed to prepare request body for kintone server: %v", err)
+	var reqBody io.Reader
+	if body != nil {
+		bs, err := json.Marshal(body)
+		if err != nil {
+			return NewError(InternalError, "Failed to prepare request body for kintone server: %v", err)
+		}
+		reqBody = bytes.NewReader(bs)
 	}
 
-	req, err := http.NewRequest(method, url, bytes.NewReader(reqBody))
+	req, err := http.NewRequest(method, url, reqBody)
 	if err != nil {
 		return NewError(InternalError, "Failed to create HTTP request: %v", err)
 	}
 
 	req.Header.Set("X-Cybozu-Authorization", h.Auth)
 	req.Header.Set("X-Cybozu-API-Token", h.Token)
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -360,7 +369,7 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 					"required": []string{"appID"},
 					"properties": JsonMap{
 						"appID": JsonMap{
-							"type":        "number",
+							"type":        "string",
 							"description": "The app ID to get information from.",
 						},
 					},
@@ -374,7 +383,7 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 					"required": []string{"appID", "record"},
 					"properties": JsonMap{
 						"appID": JsonMap{
-							"type":        "number",
+							"type":        "string",
 							"description": "The app ID to create a record in.",
 						},
 						"record": kintoneRecord,
@@ -383,13 +392,13 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 			},
 			{
 				Name:        "readRecords",
-				Description: "Read records from the specified app. Response includes the record ID, record number, and record data. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
+				Description: "Read records from the specified app. Response includes the record ID and record data. Before search records using this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
 				InputSchema: JsonMap{
 					"type":     "object",
 					"required": []string{"appID"},
 					"properties": JsonMap{
 						"appID": JsonMap{
-							"type":        "number",
+							"type":        "string",
 							"description": "The app ID to read records from.",
 						},
 						"query": JsonMap{
@@ -422,7 +431,7 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 					"required": []string{"appID", "recordID", "record"},
 					"properties": JsonMap{
 						"appID": JsonMap{
-							"type":        "number",
+							"type":        "string",
 							"description": "The app ID to update a record in.",
 						},
 						"recordID": JsonMap{
@@ -441,7 +450,7 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 					"required": []string{"appID", "recordID"},
 					"properties": JsonMap{
 						"appID": JsonMap{
-							"type":        "number",
+							"type":        "string",
 							"description": "The app ID to delete a record from.",
 						},
 						"recordID": JsonMap{
@@ -497,7 +506,7 @@ func (h *KintoneHandlers) ToolsCall(params json.RawMessage) (any, *ErrorBody) {
 	}, nil
 }
 
-func (h *KintoneHandlers) getApp(id int) *KintoneAppInfo {
+func (h *KintoneHandlers) getApp(id string) *KintoneAppConfig {
 	for _, app := range h.Apps {
 		if app.ID == id {
 			return &app
@@ -515,29 +524,55 @@ const (
 	PermDelete    Perm = "delete"
 )
 
-func (h *KintoneHandlers) checkPermissions(id int, p Perm) *ErrorBody {
+func (h *KintoneHandlers) checkPermissions(id string, p Perm) *ErrorBody {
 	app := h.getApp(id)
 	if app == nil {
-		return NewError(InvalidParams, "App ID %d is not found or not allowed to access", id)
+		return NewError(InvalidParams, "App ID %s is not found or not allowed to access", id)
 	}
 	if (p == PermRead && app.Permissions.Read) || (p == PermWrite && app.Permissions.Write) || (p == PermDelete && app.Permissions.Delete) || (p == PermSomething) {
 		return nil
 	}
-	return NewError(InvalidParams, "Permission denied to %s records in app ID %d", p, id)
+	return NewError(InvalidParams, "Permission denied to %s records in app ID %s", p, id)
 }
 
 func (h *KintoneHandlers) ListApps(params json.RawMessage) (any, *ErrorBody) {
-	return h.Apps, nil
+	type HTTPReq struct {
+		IDs []string `json:"ids"`
+	}
+	var httpReq HTTPReq
+	for _, app := range h.Apps {
+		httpReq.IDs = append(httpReq.IDs, app.ID)
+	}
+
+	var httpRes struct {
+		Apps []KintoneAppDetail `json:"apps"`
+	}
+	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/apps.json", h.URL), httpReq, &httpRes)
+	if errBody != nil {
+		return nil, errBody
+	}
+
+	for i, a := range httpRes.Apps {
+		for _, b := range h.Apps {
+			if a.AppID == b.ID {
+				httpRes.Apps[i].DescriptionForAI = b.Description
+				httpRes.Apps[i].Permissions = b.Permissions
+				break
+			}
+		}
+	}
+
+	return httpRes.Apps, nil
 }
 
 func (h *KintoneHandlers) ReadAppInfo(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
-		AppID int `json:"appID"`
+		AppID string `json:"appID"`
 	}
 	if errBody := UnmarshalJSON(params, &req); errBody != nil {
 		return nil, errBody
 	}
-	if req.AppID == 0 {
+	if req.AppID == "" {
 		return nil, NewError(InvalidParams, "Argument 'appID' is required")
 	}
 
@@ -545,26 +580,34 @@ func (h *KintoneHandlers) ReadAppInfo(params json.RawMessage) (any, *ErrorBody) 
 		return nil, errBody
 	}
 
-	var fields struct {
-		Properties map[string]JsonMap `json:"properties"`
+	var app KintoneAppDetail
+	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/app.json?id=%s", h.URL, req.AppID), nil, &app)
+	if errBody != nil {
+		return nil, errBody
 	}
-	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/app/form/fields.json?app=%d", h.URL, req.AppID), nil, &fields)
 
-	return JsonMap{
-		"appID":      req.AppID,
-		"properties": fields.Properties,
-	}, errBody
+	app.DescriptionForAI = h.getApp(req.AppID).Description
+	app.Permissions = h.getApp(req.AppID).Permissions
+
+	var fields struct {
+		Properties JsonMap `json:"properties"`
+	}
+	errBody = SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/app/form/fields.json?app=%s", h.URL, req.AppID), nil, &fields)
+
+	app.Properties = fields.Properties
+
+	return app, errBody
 }
 
 func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
-		AppID  int `json:"appID"`
-		Record any `json:"record"`
+		AppID  string  `json:"appID"`
+		Record JsonMap `json:"record"`
 	}
 	if errBody := UnmarshalJSON(params, &req); errBody != nil {
 		return nil, errBody
 	}
-	if req.AppID == 0 || req.Record == nil {
+	if req.AppID == "" || req.Record == nil {
 		return nil, NewError(InvalidParams, "Arguments 'appID' and 'record' are required")
 	}
 
@@ -589,7 +632,7 @@ func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody)
 
 func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
-		AppID  int      `json:"appID"`
+		AppID  string   `json:"appID"`
 		Query  string   `json:"query"`
 		Limit  int      `json:"limit"`
 		Fields []string `json:"fields"`
@@ -598,7 +641,7 @@ func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) 
 	if errBody := UnmarshalJSON(params, &req); errBody != nil {
 		return nil, errBody
 	}
-	if req.AppID == 0 {
+	if req.AppID == "" {
 		return nil, NewError(InvalidParams, "Argument 'appID' is required")
 	}
 
@@ -632,14 +675,14 @@ func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) 
 
 func (h *KintoneHandlers) UpdateRecord(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
-		AppID    int    `json:"appID"`
+		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
 		Record   any    `json:"record"`
 	}
 	if errBody := UnmarshalJSON(params, &req); errBody != nil {
 		return nil, errBody
 	}
-	if req.AppID == 0 || req.RecordID == "" || req.Record == nil {
+	if req.AppID == "" || req.RecordID == "" || req.Record == nil {
 		return nil, NewError(InvalidParams, "Arguments 'appID', 'recordID', and 'record' are required")
 	}
 
@@ -662,24 +705,24 @@ func (h *KintoneHandlers) UpdateRecord(params json.RawMessage) (any, *ErrorBody)
 	}, errBody
 }
 
-func (h *KintoneHandlers) readSingleRecord(appID int, recordID string) (JsonMap, *ErrorBody) {
+func (h *KintoneHandlers) readSingleRecord(appID, recordID string) (JsonMap, *ErrorBody) {
 	var result struct {
 		Record JsonMap `json:"record"`
 	}
-	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/record.json?app=%d&id=%s", h.URL, appID, recordID), nil, &result)
+	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/record.json?app=%s&id=%s", h.URL, appID, recordID), nil, &result)
 
 	return result.Record, errBody
 }
 
 func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
-		AppID    int    `json:"appID"`
+		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
 	}
-	if req.AppID == 0 || req.RecordID == "" {
+	if req.AppID == "" || req.RecordID == "" {
 		return nil, NewError(InvalidParams, "Arguments 'appID' and 'recordID' are required")
 	}
 
@@ -696,7 +739,7 @@ func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody)
 		}
 	}
 
-	if errBody := SendHTTP(h, "DELETE", fmt.Sprintf("%s/k/v1/records.json?app=%d&ids[0]=%s", h.URL, req.AppID, req.RecordID), nil, nil); errBody != nil {
+	if errBody := SendHTTP(h, "DELETE", fmt.Sprintf("%s/k/v1/records.json?app=%s&ids[0]=%s", h.URL, req.AppID, req.RecordID), nil, nil); errBody != nil {
 		return nil, errBody
 	}
 
@@ -710,8 +753,7 @@ func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody)
 }
 
 type KintoneAppConfig struct {
-	ID          int         `json:"id"`
-	Name        string      `json:"name"`
+	ID          string      `json:"id"`
 	Description string      `json:"description"`
 	Permissions Permissions `json:"permissions"`
 }
@@ -756,14 +798,7 @@ func main() {
 		handlers.URL = conf.URL
 		handlers.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", conf.Username, conf.Password)))
 		handlers.Token = conf.Token
-		for _, app := range conf.Apps {
-			handlers.Apps = append(handlers.Apps, KintoneAppInfo{
-				ID:          app.ID,
-				Name:        app.Name,
-				Description: app.Description,
-				Permissions: app.Permissions,
-			})
-		}
+		handlers.Apps = conf.Apps
 	}
 
 	server := NewRPCServer(NewRPCConn(os.Stdin, os.Stdout))

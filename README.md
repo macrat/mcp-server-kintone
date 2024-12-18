@@ -24,7 +24,6 @@ Create a configuration file like below:
     "apps": [
         {
             "id": "<your-app-id>",
-            "name": "<your-app-name>",
             "description": "<your-app-description>"
             "permissions": {
                 "read": true,
@@ -36,13 +35,30 @@ Create a configuration file like below:
 }
 ```
 
-`url` and `apps` are required.
-And at least of `username` and `password` or `token` is required.
+**Configuration parameters:**
 
-Please make sure that all apps you want to access are included in the `apps` list.
-For security reasons, this server does not allow clients to access apps that are not included in the `apps` list.
+- `url`: (required) URL of your kintone domain.
 
-Permissions are optional. In default, only read permission is granted.
+- `username`: (optional) Username for login.
+
+- `password`: (optional) Password for login.
+
+- `token`: (optional) App tokens for login.
+
+- `apps`: (required) List of apps you want to access.
+  - `id`: (required) App ID.
+  - `description`: (optional) App description for AI.
+  - `permissions`: (optional) Permissions for the app.
+    - `read`: (optional) Read permission. Default is `true`.
+    - `write`: (optional) Write permission. Default is `false`.
+    - `delete`: (optional) Delete permission. Default is `false`.
+
+**Notes:**
+
+- For connect to kintone, at least of `username` and `password` or `token` is required.
+
+- Please make sure that all apps you want to access are included in the `apps` list.
+  For security reasons, this server does not allow clients to access apps that are not included in the `apps` list.
 
 
 ### 3. Configure MCP client like Claude Desktop
