@@ -167,26 +167,6 @@ type Content struct {
 	Blob string `json:"blob,omitempty"`
 }
 
-type ResourceInfo struct {
-	URI         string `json:"uri"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	MimeType    string `json:"mimeType"`
-}
-
-type ResourcesListResult struct {
-	Resources []ResourceInfo `json:"resources"`
-}
-
-type ResourcesReadRequest struct {
-	URI string `json:"uri"`
-}
-
-type ResourcesReadResult struct {
-	URI     string    `json:"uri"`
-	Content []Content `json:"content"`
-}
-
 type ToolInfo struct {
 	Name        string  `json:"name"`
 	Description string  `json:"description,omitempty"`
@@ -238,6 +218,14 @@ func (p *Permissions) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func UnmarshalJSON[T any](data []byte, target *T) *ErrorBody {
+	err := json.Unmarshal(data, target)
+	if err != nil {
+		return NewError(InvalidParams, "Failed to parse arguments: %v", err)
+	}
+	return nil
+}
+
 type KintoneAppInfo struct {
 	ID          int         `json:"appID"`
 	Name        string      `json:"name"`
@@ -250,6 +238,41 @@ type KintoneHandlers struct {
 	Auth  string
 	Token string
 	Apps  []KintoneAppInfo
+}
+
+func SendHTTP(h *KintoneHandlers, method, url string, body any, result any) *ErrorBody {
+	reqBody, err := json.Marshal(body)
+	if err != nil {
+		return NewError(InternalError, "Failed to prepare request body for kintone server: %v", err)
+	}
+
+	req, err := http.NewRequest(method, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return NewError(InternalError, "Failed to create HTTP request: %v", err)
+	}
+
+	req.Header.Set("X-Cybozu-Authorization", h.Auth)
+	req.Header.Set("X-Cybozu-API-Token", h.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return NewError(InternalError, "Failed to send HTTP request to kintone server: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(res.Body)
+		return NewError(InternalError, "kintone server returned an error: %s: %s", res.Status, msg)
+	}
+
+	if result != nil {
+		if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+			return NewError(InternalError, "Failed to parse kintone server's response: %s", err)
+		}
+	}
+
+	return nil
 }
 
 func (h *KintoneHandlers) InitializeHandler(params json.RawMessage) (any, *ErrorBody) {
@@ -396,7 +419,7 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 							"description": "The app ID to update a record in.",
 						},
 						"recordID": JsonMap{
-							"type":        "number",
+							"type":        "string",
 							"description": "The record ID to update.",
 						},
 						"record": kintoneRecord,
@@ -415,7 +438,7 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 							"description": "The app ID to delete a record from.",
 						},
 						"recordID": JsonMap{
-							"type":        "number",
+							"type":        "string",
 							"description": "The record ID to delete.",
 						},
 					},
@@ -431,22 +454,40 @@ func (h *KintoneHandlers) ToolsCall(params json.RawMessage) (any, *ErrorBody) {
 		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
 	}
 
+	var content any
+	var errBody *ErrorBody
+
 	switch req.Name {
 	case "listApps":
-		return h.ListApps(req.Arguments)
+		content, errBody = h.ListApps(req.Arguments)
 	case "readAppInfo":
-		return h.ReadAppInfo(req.Arguments)
+		content, errBody = h.ReadAppInfo(req.Arguments)
 	case "createRecord":
-		return h.CreateRecord(req.Arguments)
+		content, errBody = h.CreateRecord(req.Arguments)
 	case "readRecords":
-		return h.ReadRecords(req.Arguments)
+		content, errBody = h.ReadRecords(req.Arguments)
 	case "updateRecord":
-		return h.UpdateRecord(req.Arguments)
+		content, errBody = h.UpdateRecord(req.Arguments)
 	case "deleteRecord":
-		return h.DeleteRecord(req.Arguments)
+		content, errBody = h.DeleteRecord(req.Arguments)
 	default:
 		return nil, NewError(InvalidParams, "Unknown tool name: %s", req.Name)
 	}
+
+	if errBody != nil {
+		return nil, errBody
+	}
+
+	bytes, err := json.MarshalIndent(content, "", "  ")
+	if err != nil {
+		return nil, NewError(InternalError, "Failed to prepare tool response: %v", err)
+	}
+
+	return ToolsCallResult{
+		Content: []Content{
+			{Type: "text", Text: string(bytes)},
+		},
+	}, nil
 }
 
 func (h *KintoneHandlers) getApp(id int) *KintoneAppInfo {
@@ -479,70 +520,33 @@ func (h *KintoneHandlers) checkPermissions(id int, p Perm) *ErrorBody {
 }
 
 func (h *KintoneHandlers) ListApps(params json.RawMessage) (any, *ErrorBody) {
-	resp, err := json.MarshalIndent(h.Apps, "", "  ")
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to marshal response: %v", err)
-	}
-	return ToolsCallResult{
-		Content: []Content{
-			{Type: "text", Text: string(resp)},
-		},
-	}, nil
+	return h.Apps, nil
 }
 
 func (h *KintoneHandlers) ReadAppInfo(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
 		AppID int `json:"appID"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
+	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+		return nil, errBody
 	}
 	if req.AppID == 0 {
 		return nil, NewError(InvalidParams, "Argument 'appID' is required")
 	}
 
-	if err := h.checkPermissions(req.AppID, PermSomething); err != nil {
-		return nil, err
-	}
-
-	hreq, err := http.NewRequest("GET", fmt.Sprintf("%s/k/v1/app/form/fields.json?app=%d", h.URL, req.AppID), nil)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to create HTTP request: %v", err)
-	}
-	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
-	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
-
-	hres, err := http.DefaultClient.Do(hreq)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to send HTTP request: %v", err)
-	}
-	defer hres.Body.Close()
-
-	if hres.StatusCode != http.StatusOK {
-		mesg, _ := io.ReadAll(hres.Body)
-		return nil, NewError(InternalError, "HTTP request failed: %s: %s", hres.Status, mesg)
+	if errBody := h.checkPermissions(req.AppID, PermSomething); errBody != nil {
+		return nil, errBody
 	}
 
 	var fields struct {
 		Properties map[string]JsonMap `json:"properties"`
 	}
-	if err := json.NewDecoder(hres.Body).Decode(&fields); err != nil {
-		return nil, NewError(InternalError, "Failed to parse response: %v", err)
-	}
+	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/app/form/fields.json?app=%d", h.URL, req.AppID), nil, &fields)
 
-	result := JsonMap{
+	return JsonMap{
 		"appID":      req.AppID,
 		"properties": fields.Properties,
-	}
-	resp, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to marshal response: %v", err)
-	}
-	return ToolsCallResult{
-		Content: []Content{
-			{Type: "text", Text: string(resp)},
-		},
-	}, nil
+	}, errBody
 }
 
 func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody) {
@@ -550,8 +554,8 @@ func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody)
 		AppID  int `json:"appID"`
 		Record any `json:"record"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
+	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+		return nil, errBody
 	}
 	if req.AppID == 0 || req.Record == nil {
 		return nil, NewError(InvalidParams, "Arguments 'appID' and 'record' are required")
@@ -561,54 +565,20 @@ func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody)
 		return nil, err
 	}
 
-	body := JsonMap{
+	httpReq := JsonMap{
 		"app":    req.AppID,
 		"record": req.Record,
 	}
-	reqBody, err := json.Marshal(body)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to marshal request body: %v", err)
-	}
 
-	hreq, err := http.NewRequest("POST", fmt.Sprintf("%s/k/v1/record.json", h.URL), bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to create HTTP request: %v", err)
-	}
-	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
-	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
-	hreq.Header.Set("Content-Type", "application/json")
-
-	hres, err := http.DefaultClient.Do(hreq)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to send HTTP request: %v", err)
-	}
-	defer hres.Body.Close()
-
-	if hres.StatusCode != http.StatusOK {
-		mesg, _ := io.ReadAll(hres.Body)
-		return nil, NewError(InternalError, "HTTP request failed: %s: %s", hres.Status, mesg)
-	}
-
-	var resBody struct {
+	var record struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(hres.Body).Decode(&resBody); err != nil {
-		return nil, NewError(InternalError, "Failed to parse response: %v", err)
-	}
+	errBody := SendHTTP(h, "POST", fmt.Sprintf("%s/k/v1/record.json", h.URL), httpReq, &record)
 
-	result := JsonMap{
+	return JsonMap{
 		"success":  true,
-		"recordID": resBody.ID,
-	}
-	resp, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to marshal response: %v", err)
-	}
-	return ToolsCallResult{
-		Content: []Content{
-			{Type: "text", Text: string(resp)},
-		},
-	}, nil
+		"recordID": record.ID,
+	}, errBody
 }
 
 func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) {
@@ -618,8 +588,8 @@ func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) 
 		Limit  int    `json:"limit"`
 		Offset int    `json:"offset"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
+	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+		return nil, errBody
 	}
 	if req.AppID == 0 {
 		return nil, NewError(InvalidParams, "Argument 'appID' is required")
@@ -646,50 +616,21 @@ func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) 
 	query.Set("offset", fmt.Sprintf("%d", req.Offset))
 	query.Set("totalCount", "true")
 
-	hreq, err := http.NewRequest("GET", fmt.Sprintf("%s/k/v1/records.json?%s", h.URL, query.Encode()), nil)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to create HTTP request: %v", err)
-	}
-	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
-	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
-
-	hres, err := http.DefaultClient.Do(hreq)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to send HTTP request: %v", err)
-	}
-	defer hres.Body.Close()
-
-	if hres.StatusCode != http.StatusOK {
-		mesg, _ := io.ReadAll(hres.Body)
-		return nil, NewError(InternalError, "HTTP request failed: %s: %s", hres.Status, mesg)
-	}
-
-	var result JsonMap
-	if err := json.NewDecoder(hres.Body).Decode(&result); err != nil {
-		return nil, NewError(InternalError, "Failed to parse response: %v", err)
-	}
-
-	resp, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to marshal response: %v", err)
-	}
-	return ToolsCallResult{
-		Content: []Content{
-			{Type: "text", Text: string(resp)},
-		},
-	}, nil
+	var records JsonMap
+	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/records.json?%s", h.URL, query.Encode()), nil, &records)
+	return records, errBody
 }
 
 func (h *KintoneHandlers) UpdateRecord(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
-		AppID    int `json:"appID"`
-		RecordID int `json:"recordID"`
-		Record   any `json:"record"`
+		AppID    int    `json:"appID"`
+		RecordID string `json:"recordID"`
+		Record   any    `json:"record"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
+	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+		return nil, errBody
 	}
-	if req.AppID == 0 || req.RecordID == 0 || req.Record == nil {
+	if req.AppID == 0 || req.RecordID == "" || req.Record == nil {
 		return nil, NewError(InvalidParams, "Arguments 'appID', 'recordID', and 'record' are required")
 	}
 
@@ -697,80 +638,39 @@ func (h *KintoneHandlers) UpdateRecord(params json.RawMessage) (any, *ErrorBody)
 		return nil, err
 	}
 
-	body := JsonMap{
+	httpReq := JsonMap{
 		"app":    req.AppID,
 		"id":     req.RecordID,
 		"record": req.Record,
 	}
-	reqBody, err := json.Marshal(body)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to marshal request body: %v", err)
+	var result struct {
+		Revision string `json:"revision"`
 	}
-
-	hreq, err := http.NewRequest("PUT", fmt.Sprintf("%s/k/v1/record.json", h.URL), bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to create HTTP request: %v", err)
-	}
-	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
-	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
-	hreq.Header.Set("Content-Type", "application/json")
-
-	hres, err := http.DefaultClient.Do(hreq)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to send HTTP request: %v", err)
-	}
-	defer hres.Body.Close()
-
-	if hres.StatusCode != http.StatusOK {
-		mesg, _ := io.ReadAll(hres.Body)
-		return nil, NewError(InternalError, "HTTP request failed: %s: %s", hres.Status, mesg)
-	}
-
-	return ToolsCallResult{
-		Content: []Content{
-			{Type: "text", Text: `{"success": true}`},
-		},
-	}, nil
+	errBody := SendHTTP(h, "PUT", fmt.Sprintf("%s/k/v1/record.json", h.URL), httpReq, &result)
+	return JsonMap{
+		"success":  true,
+		"revision": result.Revision,
+	}, errBody
 }
 
-func (h *KintoneHandlers) readSingleRecord(appID, recordID int) (JsonMap, error) {
-	hreq, err := http.NewRequest("GET", fmt.Sprintf("%s/k/v1/record.json?app=%d&id=%d", h.URL, appID, recordID), nil)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to create HTTP request: %v", err)
-	}
-	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
-	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
-
-	hres, err := http.DefaultClient.Do(hreq)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to send HTTP request: %v", err)
-	}
-	defer hres.Body.Close()
-
-	if hres.StatusCode != http.StatusOK {
-		mesg, _ := io.ReadAll(hres.Body)
-		return nil, fmt.Errorf("HTTP request failed: %s: %s", hres.Status, mesg)
-	}
-
+func (h *KintoneHandlers) readSingleRecord(appID int, recordID string) (JsonMap, *ErrorBody) {
 	var result struct {
 		Record JsonMap `json:"record"`
 	}
-	if err := json.NewDecoder(hres.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("Failed to parse response: %v", err)
-	}
+	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/record.json?app=%d&id=%s", h.URL, appID, recordID), nil, &result)
 
-	return result.Record, nil
+	return result.Record, errBody
 }
 
 func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody) {
 	var req struct {
-		AppID    int `json:"appID"`
-		RecordID int `json:"recordID"`
+		AppID    int    `json:"appID"`
+		RecordID string `json:"recordID"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
 		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
 	}
-	if req.AppID == 0 || req.RecordID == 0 {
+	if req.AppID == 0 || req.RecordID == "" {
 		return nil, NewError(InvalidParams, "Arguments 'appID' and 'recordID' are required")
 	}
 
@@ -780,28 +680,15 @@ func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody)
 
 	var deletedRecord JsonMap
 	if h.checkPermissions(req.AppID, PermRead) == nil {
-		var err error
+		var err *ErrorBody
 		deletedRecord, err = h.readSingleRecord(req.AppID, req.RecordID)
 		if err != nil {
-			return nil, NewError(InternalError, "Failed to read record: %v", err)
+			return nil, err
 		}
 	}
 
-	hreq, err := http.NewRequest("DELETE", fmt.Sprintf("%s/k/v1/records.json?app=%d&ids[0]=%d", h.URL, req.AppID, req.RecordID), nil)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to create HTTP request: %v", err)
-	}
-	hreq.Header.Set("X-Cybozu-Authorization", h.Auth)
-	hreq.Header.Set("X-Cybozu-API-Token", h.Token)
-
-	hres, err := http.DefaultClient.Do(hreq)
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to send HTTP request: %v", err)
-	}
-
-	if hres.StatusCode != http.StatusOK {
-		mesg, _ := io.ReadAll(hres.Body)
-		return nil, NewError(InternalError, "HTTP request failed: %s: %s", hres.Status, mesg)
+	if errBody := SendHTTP(h, "DELETE", fmt.Sprintf("%s/k/v1/records.json?app=%d&ids[0]=%s", h.URL, req.AppID, req.RecordID), nil, nil); errBody != nil {
+		return nil, errBody
 	}
 
 	result := JsonMap{
@@ -810,17 +697,7 @@ func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody)
 	if deletedRecord != nil {
 		result["deletedRecord"] = deletedRecord
 	}
-
-	resp, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return nil, NewError(InternalError, "Failed to marshal response: %v", err)
-	}
-
-	return ToolsCallResult{
-		Content: []Content{
-			{Type: "text", Text: string(resp)},
-		},
-	}, nil
+	return result, nil
 }
 
 type KintoneAppConfig struct {
