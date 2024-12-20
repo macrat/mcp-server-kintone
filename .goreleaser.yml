@@ -1,0 +1,58 @@
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: with-upx
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    flags:
+      - -trimpath
+    ldflags:
+      - '-s -w'
+      - '-X main.Version={{ .Version }}'
+      - '-X main.Commit={{ .ShortCommit }}'
+    hooks:
+      post: 'upx-ucl --lzma {{ .Path }}'
+  - id: without-upx
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - darwin
+    flags:
+      - -trimpath
+    ldflags:
+      - '-s -w'
+      - '-X main.Version={{ .Version }}'
+      - '-X main.Commit={{ .ShortCommit }}'
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{- .ProjectName -}}
+      _
+      {{- .Version -}}
+      _
+      {{- .Os -}}
+      _
+      {{- if eq .Arch "386" -}}
+        i386
+      {{- else if eq .Arch "amd64" -}}
+        x86_64
+      {{- else -}}
+        {{- .Arch -}}
+      {{- end -}}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files: [none*]
+
+changelog:
+  filters:
+    exclude:
+      - '^chore'
+      - '^docs'
+      - '^test'

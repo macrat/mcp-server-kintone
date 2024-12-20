@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/setup-go@v3
+        with:
+          go-version: 1.23.x
+      - uses: actions/checkout@v3
+      - name: Test
+        run: go test -race ./...
+
+  analyze:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: github/codeql-action/init@v2
+        with:
+          languages: go
+      - uses: github/codeql-action/analyze@v2
+
+  release:
+    name: Release
+    needs: [test, analyze]
+    if: "contains(github.ref, 'tags/v')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@v3
+        with:
+          go-version: 1.23.x
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Install upx-ucl
+        run: sudo apt install upx-ucl -y
+      - uses: goreleaser/goreleaser-action@v2
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

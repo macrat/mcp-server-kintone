@@ -8,7 +8,8 @@ This server allows you to explore and manipulate kintone data using AI tools suc
 
 ### 1. Install
 
-Pre-build binaries are not available yet. Please build from source.
+Download the latest release from the [rleases page](https://github.com/macrat/mcp-server-kintone/releases).
+You can place the executable file anywhere you like.
 
 
 ### 2. Configure mcp-server-kintone
@@ -24,7 +25,7 @@ Create a configuration file like below:
     "apps": [
         {
             "id": "<your-app-id>",
-            "description": "<your-app-description>"
+            "description": "<your-app-description>",
             "permissions": {
                 "read": true,
                 "write": false,
