@@ -49,7 +49,7 @@ Create a configuration file like below:
 - `apps`: (required) List of apps you want to access.
   - `id`: (required) App ID.
   - `description`: (optional) App description for AI.
-  - `permissions`: (optional) Permissions for the app.
+  - `permissions`: (optional) Permissions for AI.
     - `read`: (optional) Read permission. Default is `true`.
     - `write`: (optional) Write permission. Default is `false`.
     - `delete`: (optional) Delete permission. Default is `false`.
@@ -62,11 +62,46 @@ Create a configuration file like below:
   For security reasons, this server does not allow clients to access apps that are not included in the `apps` list.
 
 
+For example, your configuration file should look like this:
+
+```json
+{
+    "url": "https://example.cybozu.com",
+    "username": "alice",
+    "password": "password",
+    "apps": [
+        {
+            "id": "1",
+            "description": "An app that stores information about customers. It contains the name of the person in charge and contact information.",
+            "permissions": {
+                "read": true,
+                "write": false,
+                "delete": false
+            }
+        },
+        {
+            "id": "2",
+            "description": "An app that stores information about projects. It contains an overview of the project and its progress.",
+            "permissions": {
+                "read": true,
+                "write": true,
+                "delete": false
+            }
+        }
+    ]
+}
+```
+
+
 ### 3. Configure MCP client like Claude Desktop
 
 Configure your client to connect to the server.
 
-For Claude Desktop, you can use the following configuration:
+For Claude Desktop, please edit file below:
+- MacOS/Linux: `~/Library/Application\ Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+Add the following configuration to the `mcpServers` section:
 
 ```json
 {
@@ -81,8 +116,14 @@ For Claude Desktop, you can use the following configuration:
 }
 ```
 
+You may need to restart Claude Desktop to apply the changes.
+
 
 ### 4. Start to use
 
 Now you can interact with kintone using your own AI tools!
-(you may need to restart your tools before the changes take effect)
+
+For example, you can say:
+- "What is the latest status of Customer A's project?"
+- "Update the progress of Project B to 50%."
+- "Show me the projects that are behind schedule."
