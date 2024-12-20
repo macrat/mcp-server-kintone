@@ -193,31 +193,6 @@ type Permissions struct {
 	Delete bool `json:"delete"`
 }
 
-func (p *Permissions) UnmarshalJSON(data []byte) error {
-	var tmp JsonMap
-	if err := json.Unmarshal(data, &tmp); err != nil {
-		return err
-	}
-
-	if v, ok := tmp["read"]; ok {
-		p.Read = v.(bool)
-	} else {
-		p.Read = true // read is default true
-	}
-	if v, ok := tmp["write"]; ok {
-		p.Write = v.(bool)
-	} else {
-		p.Write = false
-	}
-	if v, ok := tmp["delete"]; ok {
-		p.Delete = v.(bool)
-	} else {
-		p.Delete = false
-	}
-
-	return nil
-}
-
 func UnmarshalJSON[T any](data []byte, target *T) *ErrorBody {
 	err := json.Unmarshal(data, target)
 	if err != nil {
@@ -950,6 +925,38 @@ type KintoneAppConfig struct {
 	ID          string      `json:"id"`
 	Description string      `json:"description"`
 	Permissions Permissions `json:"permissions"`
+}
+
+func (a *KintoneAppConfig) UnmarshalJSON(data []byte) error {
+	var tmp struct {
+		ID          string  `json:"id"`
+		Description string  `json:"description"`
+		Permissions JsonMap `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+
+	a.ID = tmp.ID
+	a.Description = tmp.Description
+
+	if v, ok := tmp.Permissions["read"]; ok {
+		a.Permissions.Read = v.(bool)
+	} else {
+		a.Permissions.Read = true // read is default true
+	}
+	if v, ok := tmp.Permissions["write"]; ok {
+		a.Permissions.Write = v.(bool)
+	} else {
+		a.Permissions.Write = false
+	}
+	if v, ok := tmp.Permissions["delete"]; ok {
+		a.Permissions.Delete = v.(bool)
+	} else {
+		a.Permissions.Delete = false
+	}
+
+	return nil
 }
 
 type Configuration struct {
