@@ -47,8 +47,8 @@ func TestPermissionList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.Input, func(t *testing.T) {
-			var permissions Permissions
-			if err := json.Unmarshal([]byte(tt.Input), &permissions); err != nil {
+			var conf Configuration
+			if err := json.Unmarshal([]byte(`{"apps":[{"permissions":` + tt.Input + `}]}`), &conf); err != nil {
 				if tt.Error == "" {
 					t.Errorf("unexpected error: %s", err)
 				}
@@ -57,6 +57,8 @@ func TestPermissionList(t *testing.T) {
 				}
 				return
 			}
+
+			permissions := conf.Apps[0].Permissions
 
 			if permissions.Read != tt.Output.Read {
 				t.Errorf("expected Read: %t, got: %t", tt.Output.Read, permissions.Read)
