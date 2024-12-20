@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 )
 
 var (
@@ -460,6 +461,83 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 					},
 				},
 			},
+			{
+				Name:        "readRecordComments",
+				Description: "Read comments on the specified record in the specified app.",
+				InputSchema: JsonMap{
+					"type":     "object",
+					"required": []string{"appID", "recordID"},
+					"properties": JsonMap{
+						"appID": JsonMap{
+							"type":        "string",
+							"description": "The app ID to read comments from.",
+						},
+						"recordID": JsonMap{
+							"type":        "string",
+							"description": "The record ID to read comments from.",
+						},
+						"order": JsonMap{
+							"type":        "string",
+							"description": "The order of comments. Default is 'desc'.",
+						},
+						"offset": JsonMap{
+							"type":        "number",
+							"description": "The offset of comments to read. Default is 0.",
+						},
+						"limit": JsonMap{
+							"type":        "number",
+							"description": "The maximum number of comments to read. Default is 10, maximum is 10.",
+						},
+					},
+				},
+			},
+			{
+				Name:        "createRecordComment",
+				Description: "Create a new comment on the specified record in the specified app.",
+				InputSchema: JsonMap{
+					"type":     "object",
+					"required": []string{"appID", "recordID", "comment"},
+					"properties": JsonMap{
+						"appID": JsonMap{
+							"type":        "string",
+							"description": "The app ID to create a comment in.",
+						},
+						"recordID": JsonMap{
+							"type":        "string",
+							"description": "The record ID to create a comment on.",
+						},
+						"comment": JsonMap{
+							"type":     "object",
+							"required": []string{"text"},
+							"properties": JsonMap{
+								"text": JsonMap{
+									"type":        "string",
+									"description": "The text of the comment.",
+								},
+								"mentions": JsonMap{
+									"type":        "array",
+									"description": "The mention targets of the comment. The target can be a user, a group, or a organization.",
+									"items": JsonMap{
+										"type":     "object",
+										"required": []string{"code"},
+										"properties": JsonMap{
+											"code": JsonMap{
+												"type":        "string",
+												"description": "The code of the mention target. You can get the code by other records or comments.",
+											},
+											"type": JsonMap{
+												"type":        "string",
+												"description": "The type of the mention target. Default is 'USER'.",
+												"enum":        []string{"USER", "GROUP", "ORGANIZATION"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}, nil
 }
@@ -486,6 +564,10 @@ func (h *KintoneHandlers) ToolsCall(params json.RawMessage) (any, *ErrorBody) {
 		content, errBody = h.UpdateRecord(req.Arguments)
 	case "deleteRecord":
 		content, errBody = h.DeleteRecord(req.Arguments)
+	case "readRecordComments":
+		content, errBody = h.ReadRecordComments(req.Arguments)
+	case "createRecordComment":
+		content, errBody = h.CreateRecordComment(req.Arguments)
 	default:
 		return nil, NewError(InvalidParams, "Unknown tool name: %s", req.Name)
 	}
@@ -524,15 +606,23 @@ const (
 	PermDelete    Perm = "delete"
 )
 
-func (h *KintoneHandlers) checkPermissions(id string, p Perm) *ErrorBody {
+func (h *KintoneHandlers) checkPermissions(id string, ps ...Perm) *ErrorBody {
 	app := h.getApp(id)
 	if app == nil {
 		return NewError(InvalidParams, "App ID %s is not found or not allowed to access", id)
 	}
-	if (p == PermRead && app.Permissions.Read) || (p == PermWrite && app.Permissions.Write) || (p == PermDelete && app.Permissions.Delete) || (p == PermSomething) {
-		return nil
+	for _, p := range ps {
+		if (p == PermRead && app.Permissions.Read) || (p == PermWrite && app.Permissions.Write) || (p == PermDelete && app.Permissions.Delete) || (p == PermSomething) {
+			return nil
+		}
 	}
-	return NewError(InvalidParams, "Permission denied to %s records in app ID %s", p, id)
+
+	ss := make([]string, len(ps))
+	for i, p := range ps {
+		ss[i] = string(p)
+	}
+
+	return NewError(InvalidParams, "Permission denied to %s records in app ID %s", strings.Join(ss, ","), id)
 }
 
 func (h *KintoneHandlers) ListApps(params json.RawMessage) (any, *ErrorBody) {
@@ -750,6 +840,110 @@ func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody)
 		result["deletedRecord"] = deletedRecord
 	}
 	return result, nil
+}
+
+func (h *KintoneHandlers) ReadRecordComments(params json.RawMessage) (any, *ErrorBody) {
+	var req struct {
+		AppID    string `json:"appID"`
+		RecordID string `json:"recordID"`
+		Order    string `json:"order"`
+		Offset   int    `json:"offset"`
+		Limit    int    `json:"limit"`
+	}
+	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+		return nil, errBody
+	}
+
+	if req.AppID == "" || req.RecordID == "" {
+		return nil, NewError(InvalidParams, "Arguments 'appID' and 'recordID' are required")
+	}
+
+	if req.Order == "" {
+		req.Order = "desc"
+	} else if req.Order != "asc" && req.Order != "desc" {
+		return nil, NewError(InvalidParams, "Order must be 'asc' or 'desc'")
+	}
+
+	if req.Offset < 0 {
+		return nil, NewError(InvalidParams, "Offset must be greater than or equal to 0")
+	}
+
+	if req.Limit < 0 || req.Limit > 10 {
+		return nil, NewError(InvalidParams, "Limit must be between 1 and 10")
+	} else if req.Limit == 0 {
+		req.Limit = 10
+	}
+
+	if err := h.checkPermissions(req.AppID, PermRead); err != nil {
+		return nil, err
+	}
+
+	httpReq := JsonMap{
+		"app":    req.AppID,
+		"record": req.RecordID,
+		"order":  req.Order,
+		"offset": req.Offset,
+		"limit":  req.Limit,
+	}
+	var httpRes struct {
+		Comments []JsonMap `json:"comments"`
+		Older    bool      `json:"older"`
+		Newer    bool      `json:"newer"`
+	}
+	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/record/comments.json", h.URL), httpReq, &httpRes)
+
+	return JsonMap{
+		"comments":            httpRes.Comments,
+		"existsOlderComments": httpRes.Older,
+		"existsNewerComments": httpRes.Newer,
+	}, errBody
+}
+
+func (h *KintoneHandlers) CreateRecordComment(params json.RawMessage) (any, *ErrorBody) {
+	var req struct {
+		AppID    string `json:"appID"`
+		RecordID string `json:"recordID"`
+		Comment  struct {
+			Text     string `json:"text"`
+			Mentions []struct {
+				Code string `json:"code"`
+				Type string `json:"type"`
+			} `json:"mentions"`
+		} `json:"comment"`
+	}
+	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+		return nil, errBody
+	}
+
+	if req.AppID == "" || req.RecordID == "" || req.Comment.Text == "" {
+		return nil, NewError(InvalidParams, "Arguments 'appID', 'recordID', and 'comment.text' are required")
+	}
+
+	for i, m := range req.Comment.Mentions {
+		if m.Code == "" {
+			return nil, NewError(InvalidParams, "Mention code is required")
+		}
+		if m.Type == "" {
+			req.Comment.Mentions[i].Type = "USER"
+		} else if m.Type != "USER" && m.Type != "GROUP" && m.Type != "ORGANIZATION" {
+			return nil, NewError(InvalidParams, "Mention type must be 'USER', 'GROUP', or 'ORGANIZATION'")
+		}
+	}
+
+	if err := h.checkPermissions(req.AppID, PermRead, PermWrite); err != nil {
+		return nil, err
+	}
+
+	httpReq := JsonMap{
+		"app":     req.AppID,
+		"record":  req.RecordID,
+		"comment": req.Comment,
+	}
+	errBody := SendHTTP(h, "POST", fmt.Sprintf("%s/k/v1/record/comment.json", h.URL), httpReq, nil)
+
+	return JsonMap{
+		"success": true,
+	}, errBody
 }
 
 type KintoneAppConfig struct {
