@@ -1,0 +1,56 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required:
+      - url
+      - apps
+    properties:
+      url:
+        type: string
+        description: URL of your kintone domain.
+      username:
+        type: string
+        description: Username for login.
+      password:
+        type: string
+        description: Password for login.
+      token:
+        type: string
+        description: App tokens for login.
+      apps:
+        type: array
+        items:
+          type: object
+          required:
+            - id
+          properties:
+            id:
+              type: string
+              description: App ID.
+            description:
+              type: string
+              description: App description for AI.
+            permissions:
+              type: object
+              properties:
+                read:
+                  type: boolean
+                  default: true
+                  description: Read permission.
+                write:
+                  type: boolean
+                  default: false
+                  description: Write permission.
+                delete:
+                  type: boolean
+                  default: false
+                  description: Delete permission.
+        description: List of apps you want to access.
+  commandFunction:
+    # A function that produces the CLI command to start the MCP on stdio.
+    |-
+    config => ({ command: './mcp-server-kintone', args: ['./configuration.json'] })

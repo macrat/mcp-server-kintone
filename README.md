@@ -1,5 +1,7 @@
 # MCP server for kintone
 
+[![smithery badge](https://smithery.ai/badge/mcp-server-kintone)](https://smithery.ai/server/mcp-server-kintone)
+
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for [kintone](https://kintone.cybozu.co.jp/).
 This server allows you to explore and manipulate kintone data using AI tools such as [Claude Desktop](https://claude.ai/download)!
 
@@ -9,6 +11,16 @@ Japanese version: 日本語の説明は[README.ja.md](README.ja.md)にありま�
 ## Usage
 
 ### 1. Install
+
+#### Installing via Smithery
+
+To install MCP server for kintone for Claude Desktop automatically via [Smithery](https://smithery.ai/server/mcp-server-kintone):
+
+```bash
+npx -y @smithery/cli install mcp-server-kintone --client claude
+```
+
+#### Installing Manually
 
 Download the latest release from the [rleases page](https://github.com/macrat/mcp-server-kintone/releases).
 You can place the executable file anywhere you like.
