@@ -2,14 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/macrat/go-jsonrpc2"
 )
 
 var (
@@ -18,136 +20,6 @@ var (
 )
 
 type JsonMap map[string]any
-
-type Request struct {
-	JsonRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-}
-
-type ErrorCode int
-
-const (
-	ParseError     ErrorCode = -32700
-	InvalidRequest ErrorCode = -32600
-	MethodNotFound ErrorCode = -32601
-	InvalidParams  ErrorCode = -32602
-	InternalError  ErrorCode = -32603
-)
-
-type ErrorBody struct {
-	Code    ErrorCode `json:"code"`
-	Message string    `json:"message"`
-}
-
-func NewError(code ErrorCode, message string, data ...any) *ErrorBody {
-	return &ErrorBody{
-		Code:    code,
-		Message: fmt.Sprintf(message, data...),
-	}
-}
-
-type Response struct {
-	JsonRPC string     `json:"jsonrpc"`
-	ID      any        `json:"id"`
-	Result  any        `json:"result,omitempty"`
-	Error   *ErrorBody `json:"error,omitempty"`
-}
-
-type RPCConn struct {
-	r *json.Decoder
-	w *json.Encoder
-}
-
-func NewRPCConn(in io.Reader, out io.Writer) RPCConn {
-	return RPCConn{
-		r: json.NewDecoder(in),
-		w: json.NewEncoder(out),
-	}
-}
-
-func (c RPCConn) Read() (*Request, error) {
-	var req Request
-	if err := c.r.Decode(&req); err != nil {
-		return nil, err
-	}
-	return &req, nil
-}
-
-func (c RPCConn) Write(res Response) error {
-	return c.w.Encode(res)
-}
-
-type HandlerFunc func(json.RawMessage) (any, *ErrorBody)
-
-type RPCServer struct {
-	conn     RPCConn
-	handlers map[string]HandlerFunc
-}
-
-func NewRPCServer(conn RPCConn) *RPCServer {
-	return &RPCServer{
-		conn:     conn,
-		handlers: make(map[string]HandlerFunc),
-	}
-}
-
-func (s *RPCServer) SetHandler(method string, handler HandlerFunc) {
-	s.handlers[method] = handler
-}
-
-func (s *RPCServer) Serve() error {
-	for {
-		req, err := s.conn.Read()
-		if errors.Is(err, io.EOF) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-
-		handler, ok := s.handlers[req.Method]
-		if !ok {
-			if req.ID == nil {
-				continue
-			}
-			s.conn.Write(Response{
-				JsonRPC: "2.0",
-				ID:      req.ID,
-				Error: &ErrorBody{
-					Code:    MethodNotFound,
-					Message: "Method not found",
-				},
-			})
-			continue
-		}
-
-		res, errBody := handler(req.Params)
-		if errBody != nil {
-			s.conn.Write(Response{
-				JsonRPC: "2.0",
-				ID:      req.ID,
-				Error:   errBody,
-			})
-			continue
-		}
-		if res != nil {
-			s.conn.Write(Response{
-				JsonRPC: "2.0",
-				ID:      req.ID,
-				Result:  res,
-			})
-		}
-	}
-}
-
-func IgnoreHandler(params json.RawMessage) (any, *ErrorBody) {
-	return nil, nil
-}
-
-func PongHandler(params json.RawMessage) (any, *ErrorBody) {
-	return JsonMap{}, nil
-}
 
 type ServerInfo struct {
 	Name    string `json:"name"`
@@ -193,10 +65,13 @@ type Permissions struct {
 	Delete bool `json:"delete"`
 }
 
-func UnmarshalJSON[T any](data []byte, target *T) *ErrorBody {
+func UnmarshalParams[T any](data []byte, target *T) error {
 	err := json.Unmarshal(data, target)
 	if err != nil {
-		return NewError(InvalidParams, "Failed to parse arguments: %v", err)
+		return jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: fmt.Sprintf("Failed to parse parameters: %v", err),
+		}
 	}
 	return nil
 }
@@ -219,48 +94,68 @@ type KintoneHandlers struct {
 	Apps  []KintoneAppConfig
 }
 
-func SendHTTP(h *KintoneHandlers, method, url string, body any, result any) *ErrorBody {
+func SendHTTP(h *KintoneHandlers, method, url string, body any, result any) error {
 	var reqBody io.Reader
 	if body != nil {
 		bs, err := json.Marshal(body)
 		if err != nil {
-			return NewError(InternalError, "Failed to prepare request body for kintone server: %v", err)
+			return jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to prepare request body for kintone server: %v", err),
+			}
 		}
 		reqBody = bytes.NewReader(bs)
 	}
 
 	req, err := http.NewRequest(method, url, reqBody)
 	if err != nil {
-		return NewError(InternalError, "Failed to create HTTP request: %v", err)
+		return jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to create HTTP request: %v", err),
+		}
 	}
 
-	req.Header.Set("X-Cybozu-Authorization", h.Auth)
-	req.Header.Set("X-Cybozu-API-Token", h.Token)
+	if h.Auth != "" {
+		req.Header.Set("X-Cybozu-Authorization", h.Auth)
+	}
+	if h.Token != "" {
+		req.Header.Set("X-Cybozu-API-Token", h.Token)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return NewError(InternalError, "Failed to send HTTP request to kintone server: %v", err)
+		return jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to send HTTP request to kintone server: %v", err),
+		}
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(res.Body)
-		return NewError(InternalError, "kintone server returned an error: %s: %s", res.Status, msg)
+		return jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: "kintone server returned an error",
+			Data:    JsonMap{"statusCode": res.Status, "message": string(msg)},
+		}
 	}
 
 	if result != nil {
 		if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-			return NewError(InternalError, "Failed to parse kintone server's response: %s", err)
+			return jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to parse kintone server's response: %v", err),
+			}
 		}
 	}
 
 	return nil
 }
 
-func (h *KintoneHandlers) InitializeHandler(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) InitializeHandler(ctx context.Context, params any) (InitializeResult, error) {
 	return InitializeResult{
 		ProtocolVersion: "2024-11-05",
 		Capabilities: JsonMap{
@@ -274,7 +169,7 @@ func (h *KintoneHandlers) InitializeHandler(params json.RawMessage) (any, *Error
 	}, nil
 }
 
-func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) ToolsList(ctx context.Context, params any) (ToolsListResult, error) {
 	kintoneRecord := JsonMap{
 		"type":        "object",
 		"description": `The record data to create. Record data format is the same as kintone's record data format. For example, {"field1": {"value": "value1"}, "field2": {"value": "value2"}, "field3": {"value": "value3"}}.`,
@@ -517,43 +412,44 @@ func (h *KintoneHandlers) ToolsList(params json.RawMessage) (any, *ErrorBody) {
 	}, nil
 }
 
-func (h *KintoneHandlers) ToolsCall(params json.RawMessage) (any, *ErrorBody) {
-	var req ToolsCallRequest
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
-	}
-
+func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest) (ToolsCallResult, error) {
 	var content any
-	var errBody *ErrorBody
+	var err error
 
-	switch req.Name {
+	switch params.Name {
 	case "listApps":
-		content, errBody = h.ListApps(req.Arguments)
+		content, err = h.ListApps(ctx, params.Arguments)
 	case "readAppInfo":
-		content, errBody = h.ReadAppInfo(req.Arguments)
+		content, err = h.ReadAppInfo(ctx, params.Arguments)
 	case "createRecord":
-		content, errBody = h.CreateRecord(req.Arguments)
+		content, err = h.CreateRecord(ctx, params.Arguments)
 	case "readRecords":
-		content, errBody = h.ReadRecords(req.Arguments)
+		content, err = h.ReadRecords(ctx, params.Arguments)
 	case "updateRecord":
-		content, errBody = h.UpdateRecord(req.Arguments)
+		content, err = h.UpdateRecord(ctx, params.Arguments)
 	case "deleteRecord":
-		content, errBody = h.DeleteRecord(req.Arguments)
+		content, err = h.DeleteRecord(ctx, params.Arguments)
 	case "readRecordComments":
-		content, errBody = h.ReadRecordComments(req.Arguments)
+		content, err = h.ReadRecordComments(ctx, params.Arguments)
 	case "createRecordComment":
-		content, errBody = h.CreateRecordComment(req.Arguments)
+		content, err = h.CreateRecordComment(ctx, params.Arguments)
 	default:
-		return nil, NewError(InvalidParams, "Unknown tool name: %s", req.Name)
+		return ToolsCallResult{}, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: fmt.Sprintf("Unknown tool name: %s", params.Name),
+		}
 	}
 
-	if errBody != nil {
-		return nil, errBody
+	if err != nil {
+		return ToolsCallResult{}, err
 	}
 
 	bytes, err := json.MarshalIndent(content, "", "  ")
 	if err != nil {
-		return nil, NewError(InternalError, "Failed to prepare tool response: %v", err)
+		return ToolsCallResult{}, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to prepare tool response: %v", err),
+		}
 	}
 
 	return ToolsCallResult{
@@ -581,10 +477,13 @@ const (
 	PermDelete    Perm = "delete"
 )
 
-func (h *KintoneHandlers) checkPermissions(id string, ps ...Perm) *ErrorBody {
+func (h *KintoneHandlers) checkPermissions(id string, ps ...Perm) error {
 	app := h.getApp(id)
 	if app == nil {
-		return NewError(InvalidParams, "App ID %s is not found or not allowed to access", id)
+		return jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: fmt.Sprintf("App ID %s is not found or not allowed to access. Please check the MCP server settings and/or ask to the administrator.", id),
+		}
 	}
 	for _, p := range ps {
 		if (p == PermRead && app.Permissions.Read) || (p == PermWrite && app.Permissions.Write) || (p == PermDelete && app.Permissions.Delete) || (p == PermSomething) {
@@ -597,10 +496,13 @@ func (h *KintoneHandlers) checkPermissions(id string, ps ...Perm) *ErrorBody {
 		ss[i] = string(p)
 	}
 
-	return NewError(InvalidParams, "Permission denied to %s records in app ID %s", strings.Join(ss, ","), id)
+	return jsonrpc2.Error{
+		Code:    jsonrpc2.InvalidParamsCode,
+		Message: fmt.Sprintf("Permission denied to %s records in app ID %s. Please check the MCP server settings and/or ask to the administrator.", strings.Join(ss, ", "), id),
+	}
 }
 
-func (h *KintoneHandlers) ListApps(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) (any, error) {
 	type HTTPReq struct {
 		IDs []string `json:"ids"`
 	}
@@ -630,15 +532,18 @@ func (h *KintoneHandlers) ListApps(params json.RawMessage) (any, *ErrorBody) {
 	return httpRes.Apps, nil
 }
 
-func (h *KintoneHandlers) ReadAppInfo(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		AppID string `json:"appID"`
 	}
-	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+	if errBody := UnmarshalParams(params, &req); errBody != nil {
 		return nil, errBody
 	}
 	if req.AppID == "" {
-		return nil, NewError(InvalidParams, "Argument 'appID' is required")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Argument 'appID' is required",
+		}
 	}
 
 	if errBody := h.checkPermissions(req.AppID, PermSomething); errBody != nil {
@@ -664,16 +569,19 @@ func (h *KintoneHandlers) ReadAppInfo(params json.RawMessage) (any, *ErrorBody) 
 	return app, errBody
 }
 
-func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		AppID  string  `json:"appID"`
 		Record JsonMap `json:"record"`
 	}
-	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+	if errBody := UnmarshalParams(params, &req); errBody != nil {
 		return nil, errBody
 	}
 	if req.AppID == "" || req.Record == nil {
-		return nil, NewError(InvalidParams, "Arguments 'appID' and 'record' are required")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'appID' and 'record' are required",
+		}
 	}
 
 	if err := h.checkPermissions(req.AppID, PermWrite); err != nil {
@@ -695,29 +603,39 @@ func (h *KintoneHandlers) CreateRecord(params json.RawMessage) (any, *ErrorBody)
 	}, errBody
 }
 
-func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		AppID  string   `json:"appID"`
 		Query  string   `json:"query"`
-		Limit  int      `json:"limit"`
+		Limit  *int     `json:"limit"`
 		Fields []string `json:"fields"`
 		Offset int      `json:"offset"`
 	}
-	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+	if errBody := UnmarshalParams(params, &req); errBody != nil {
 		return nil, errBody
 	}
 	if req.AppID == "" {
-		return nil, NewError(InvalidParams, "Argument 'appID' is required")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Argument 'appID' is required",
+		}
 	}
 
-	if req.Limit < 0 || req.Limit > 500 {
-		return nil, NewError(InvalidParams, "Limit must be between 1 and 500")
-	} else if req.Limit == 0 {
-		req.Limit = 10
+	if req.Limit == nil {
+		limit := 10
+		req.Limit = &limit
+	} else if *req.Limit < 1 || *req.Limit > 500 {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Limit must be between 1 and 500",
+		}
 	}
 
 	if req.Offset < 0 || req.Offset > 10000 {
-		return nil, NewError(InvalidParams, "Offset must be between 0 and 10000")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Offset must be between 0 and 10000",
+		}
 	}
 
 	if err := h.checkPermissions(req.AppID, PermRead); err != nil {
@@ -727,7 +645,7 @@ func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) 
 	httpReq := JsonMap{
 		"app":        req.AppID,
 		"query":      req.Query,
-		"limit":      req.Limit,
+		"limit":      *req.Limit,
 		"offset":     req.Offset,
 		"fields":     req.Fields,
 		"totalCount": true,
@@ -738,17 +656,20 @@ func (h *KintoneHandlers) ReadRecords(params json.RawMessage) (any, *ErrorBody) 
 	return records, errBody
 }
 
-func (h *KintoneHandlers) UpdateRecord(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
 		Record   any    `json:"record"`
 	}
-	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+	if errBody := UnmarshalParams(params, &req); errBody != nil {
 		return nil, errBody
 	}
 	if req.AppID == "" || req.RecordID == "" || req.Record == nil {
-		return nil, NewError(InvalidParams, "Arguments 'appID', 'recordID', and 'record' are required")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'appID', 'recordID', and 'record' are required",
+		}
 	}
 
 	if err := h.checkPermissions(req.AppID, PermWrite); err != nil {
@@ -770,7 +691,7 @@ func (h *KintoneHandlers) UpdateRecord(params json.RawMessage) (any, *ErrorBody)
 	}, errBody
 }
 
-func (h *KintoneHandlers) readSingleRecord(appID, recordID string) (JsonMap, *ErrorBody) {
+func (h *KintoneHandlers) readSingleRecord(ctx context.Context, appID, recordID string) (JsonMap, error) {
 	var result struct {
 		Record JsonMap `json:"record"`
 	}
@@ -779,16 +700,19 @@ func (h *KintoneHandlers) readSingleRecord(appID, recordID string) (JsonMap, *Er
 	return result.Record, errBody
 }
 
-func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
 	}
-	if err := json.Unmarshal(params, &req); err != nil {
-		return nil, NewError(InvalidParams, "Failed to parse parameters: %v", err)
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
 	}
 	if req.AppID == "" || req.RecordID == "" {
-		return nil, NewError(InvalidParams, "Arguments 'appID' and 'recordID' are required")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'appID' and 'recordID' are required",
+		}
 	}
 
 	if err := h.checkPermissions(req.AppID, PermDelete); err != nil {
@@ -797,8 +721,8 @@ func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody)
 
 	var deletedRecord JsonMap
 	if h.checkPermissions(req.AppID, PermRead) == nil {
-		var err *ErrorBody
-		deletedRecord, err = h.readSingleRecord(req.AppID, req.RecordID)
+		var err error
+		deletedRecord, err = h.readSingleRecord(ctx, req.AppID, req.RecordID)
 		if err != nil {
 			return nil, err
 		}
@@ -817,36 +741,49 @@ func (h *KintoneHandlers) DeleteRecord(params json.RawMessage) (any, *ErrorBody)
 	return result, nil
 }
 
-func (h *KintoneHandlers) ReadRecordComments(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
 		Order    string `json:"order"`
 		Offset   int    `json:"offset"`
-		Limit    int    `json:"limit"`
+		Limit    *int   `json:"limit"`
 	}
-	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+	if errBody := UnmarshalParams(params, &req); errBody != nil {
 		return nil, errBody
 	}
 
 	if req.AppID == "" || req.RecordID == "" {
-		return nil, NewError(InvalidParams, "Arguments 'appID' and 'recordID' are required")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'appID' and 'recordID' are required",
+		}
 	}
 
 	if req.Order == "" {
 		req.Order = "desc"
 	} else if req.Order != "asc" && req.Order != "desc" {
-		return nil, NewError(InvalidParams, "Order must be 'asc' or 'desc'")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Order must be 'asc' or 'desc'",
+		}
 	}
 
 	if req.Offset < 0 {
-		return nil, NewError(InvalidParams, "Offset must be greater than or equal to 0")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Offset must be greater than or equal to 0",
+		}
 	}
 
-	if req.Limit < 0 || req.Limit > 10 {
-		return nil, NewError(InvalidParams, "Limit must be between 1 and 10")
-	} else if req.Limit == 0 {
-		req.Limit = 10
+	if req.Limit == nil {
+		limit := 10
+		req.Limit = &limit
+	} else if *req.Limit < 0 || *req.Limit > 10 {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Limit must be between 1 and 10",
+		}
 	}
 
 	if err := h.checkPermissions(req.AppID, PermRead); err != nil {
@@ -858,7 +795,7 @@ func (h *KintoneHandlers) ReadRecordComments(params json.RawMessage) (any, *Erro
 		"record": req.RecordID,
 		"order":  req.Order,
 		"offset": req.Offset,
-		"limit":  req.Limit,
+		"limit":  *req.Limit,
 	}
 	var httpRes struct {
 		Comments []JsonMap `json:"comments"`
@@ -874,7 +811,7 @@ func (h *KintoneHandlers) ReadRecordComments(params json.RawMessage) (any, *Erro
 	}, errBody
 }
 
-func (h *KintoneHandlers) CreateRecordComment(params json.RawMessage) (any, *ErrorBody) {
+func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -886,22 +823,31 @@ func (h *KintoneHandlers) CreateRecordComment(params json.RawMessage) (any, *Err
 			} `json:"mentions"`
 		} `json:"comment"`
 	}
-	if errBody := UnmarshalJSON(params, &req); errBody != nil {
+	if errBody := UnmarshalParams(params, &req); errBody != nil {
 		return nil, errBody
 	}
 
 	if req.AppID == "" || req.RecordID == "" || req.Comment.Text == "" {
-		return nil, NewError(InvalidParams, "Arguments 'appID', 'recordID', and 'comment.text' are required")
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'appID', 'recordID', and 'comment.text' are required",
+		}
 	}
 
 	for i, m := range req.Comment.Mentions {
 		if m.Code == "" {
-			return nil, NewError(InvalidParams, "Mention code is required")
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InvalidParamsCode,
+				Message: "Mention code is required",
+			}
 		}
 		if m.Type == "" {
 			req.Comment.Mentions[i].Type = "USER"
 		} else if m.Type != "USER" && m.Type != "GROUP" && m.Type != "ORGANIZATION" {
-			return nil, NewError(InvalidParams, "Mention type must be 'USER', 'GROUP', or 'ORGANIZATION'")
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InvalidParamsCode,
+				Message: "Mention type must be 'USER', 'GROUP', or 'ORGANIZATION'",
+			}
 		}
 	}
 
@@ -967,6 +913,19 @@ type Configuration struct {
 	Apps     []KintoneAppConfig `json:"apps"`
 }
 
+type MergedReadWriter struct {
+	r io.Reader
+	w io.Writer
+}
+
+func (rw *MergedReadWriter) Read(p []byte) (int, error) {
+	return rw.r.Read(p)
+}
+
+func (rw *MergedReadWriter) Write(p []byte) (int, error) {
+	return rw.w.Write(p)
+}
+
 func main() {
 	if len(os.Args) != 2 {
 		fmt.Fprintf(os.Stderr, "MCP (Model Context Protocol) Server for kintone.\n")
@@ -997,22 +956,25 @@ func main() {
 		}
 
 		handlers.URL = conf.URL
-		handlers.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", conf.Username, conf.Password)))
+		if conf.Username != "" && conf.Password != "" {
+			handlers.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", conf.Username, conf.Password)))
+		}
 		handlers.Token = conf.Token
 		handlers.Apps = conf.Apps
 	}
 
-	server := NewRPCServer(NewRPCConn(os.Stdin, os.Stdout))
-	server.SetHandler("initialize", handlers.InitializeHandler)
-	server.SetHandler("notifications/initialized", IgnoreHandler)
-	server.SetHandler("ping", PongHandler)
-	server.SetHandler("tools/list", handlers.ToolsList)
-	server.SetHandler("tools/call", handlers.ToolsCall)
+	server := jsonrpc2.NewServer()
+	server.On("initialize", jsonrpc2.Call(handlers.InitializeHandler))
+	server.On("notifications/initialized", jsonrpc2.Notify(func(ctx context.Context, params any) error {
+		return nil
+	}))
+	server.On("ping", jsonrpc2.Call(func(ctx context.Context, params any) (struct{}, error) {
+		return struct{}{}, nil
+	}))
+	server.On("tools/list", jsonrpc2.Call(handlers.ToolsList))
+	server.On("tools/call", jsonrpc2.Call(handlers.ToolsCall))
 
 	fmt.Fprintf(os.Stderr, "kintone server is running on stdio!\n")
 
-	if err := server.Serve(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	server.ServeForOne(&MergedReadWriter{r: os.Stdin, w: os.Stdout})
 }
