@@ -37,10 +37,34 @@ type InitializeResult struct {
 	Instructions    string     `json:"instructions"`
 }
 
+type Resource struct {
+	URI      string `json:"uri"`
+	MIMEType string `json:"mimeType"`
+	Text     string `json:"text,omitempty"`
+	Blob     string `json:"blob,omitempty"`
+}
+
+func NewResource(uri, mimeType string, r io.Reader) (*Resource, error) {
+	if strings.HasPrefix(mimeType, "text/") {
+		bs, err := io.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+		return &Resource{URI: uri, MIMEType: mimeType, Text: string(bs)}, nil
+	} else {
+		var buf bytes.Buffer
+		enc := base64.NewEncoder(base64.StdEncoding, &buf)
+		if _, err := io.Copy(enc, r); err != nil {
+			return nil, err
+		}
+		return &Resource{URI: uri, MIMEType: mimeType, Blob: buf.String()}, nil
+	}
+}
+
 type Content struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-	Blob string `json:"blob,omitempty"`
+	Type     string   `json:"type"`
+	Text     string   `json:"text,omitempty"`
+	Resource Resource `json:"resource,omitempty"`
 }
 
 func JSONContent(v any) (*Content, error) {
@@ -246,6 +270,8 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 		content, err = h.UpdateRecord(ctx, params.Arguments)
 	case "deleteRecord":
 		content, err = h.DeleteRecord(ctx, params.Arguments)
+	case "downloadAttachmentFile":
+		content, err = h.DownloadAttachmentFile(ctx, params.Arguments)
 	case "readRecordComments":
 		content, err = h.ReadRecordComments(ctx, params.Arguments)
 	case "createRecordComment":
@@ -557,6 +583,45 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 		result["deletedRecord"] = deletedRecord
 	}
 	return JSONContent(result)
+}
+
+func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params json.RawMessage) (*Content, error) {
+	var req struct {
+		FileKey string `json:"fileKey"`
+	}
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
+	}
+	if req.FileKey == "" {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Argument 'fileKey' is required",
+		}
+	}
+
+	httpRes, err := h.SendHTTP(ctx, "GET", "/k/v1/file.json", Query{"fileKey": req.FileKey}, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer httpRes.Body.Close()
+
+	contentType := httpRes.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	resource, err := NewResource("kintone://file/"+req.FileKey, contentType, httpRes.Body)
+	if err != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to read attachment file: %v", err),
+		}
+	}
+
+	return &Content{
+		Type:     "resource",
+		Resource: *resource,
+	}, nil
 }
 
 func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) (*Content, error) {
