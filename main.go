@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -95,7 +96,17 @@ type KintoneHandlers struct {
 	Apps  []KintoneAppConfig
 }
 
-func SendHTTP(h *KintoneHandlers, method, url string, body any, result any) error {
+type Query map[string]string
+
+func (q Query) Encode() string {
+	values := make(url.Values)
+	for k, v := range q {
+		values.Set(k, v)
+	}
+	return values.Encode()
+}
+
+func (h *KintoneHandlers) SendHTTP(method, url string, query Query, body any, result any) error {
 	var reqBody io.Reader
 	if body != nil {
 		bs, err := json.Marshal(body)
@@ -108,7 +119,11 @@ func SendHTTP(h *KintoneHandlers, method, url string, body any, result any) erro
 		reqBody = bytes.NewReader(bs)
 	}
 
-	req, err := http.NewRequest(method, url, reqBody)
+	if query != nil {
+		url += "?" + query.Encode()
+	}
+
+	req, err := http.NewRequest(method, h.URL+url, reqBody)
 	if err != nil {
 		return jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
@@ -515,7 +530,7 @@ func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) 
 	var httpRes struct {
 		Apps []KintoneAppDetail `json:"apps"`
 	}
-	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/apps.json", h.URL), httpReq, &httpRes)
+	errBody := h.SendHTTP("GET", "/k/v1/apps.json", nil, httpReq, &httpRes)
 	if errBody != nil {
 		return nil, errBody
 	}
@@ -552,7 +567,7 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 	}
 
 	var app KintoneAppDetail
-	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/app.json?id=%s", h.URL, req.AppID), nil, &app)
+	errBody := h.SendHTTP("GET", "/k/v1/app.json", Query{"id": req.AppID}, nil, &app)
 	if errBody != nil {
 		return nil, errBody
 	}
@@ -563,7 +578,7 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 	var fields struct {
 		Properties JsonMap `json:"properties"`
 	}
-	errBody = SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/app/form/fields.json?app=%s", h.URL, req.AppID), nil, &fields)
+	errBody = h.SendHTTP("GET", "/k/v1/app/form/fields.json", Query{"app": req.AppID}, nil, &fields)
 
 	app.Properties = fields.Properties
 
@@ -596,7 +611,7 @@ func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessa
 	var record struct {
 		ID string `json:"id"`
 	}
-	errBody := SendHTTP(h, "POST", fmt.Sprintf("%s/k/v1/record.json", h.URL), httpReq, &record)
+	errBody := h.SendHTTP("POST", "/k/v1/record.json", nil, httpReq, &record)
 
 	return JsonMap{
 		"success":  true,
@@ -653,7 +668,7 @@ func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessag
 	}
 
 	var records JsonMap
-	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/records.json", h.URL), httpReq, &records)
+	errBody := h.SendHTTP("GET", "/k/v1/records.json", nil, httpReq, &records)
 	return records, errBody
 }
 
@@ -685,7 +700,7 @@ func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessa
 	var result struct {
 		Revision string `json:"revision"`
 	}
-	errBody := SendHTTP(h, "PUT", fmt.Sprintf("%s/k/v1/record.json", h.URL), httpReq, &result)
+	errBody := h.SendHTTP("PUT", "/k/v1/record.json", nil, httpReq, &result)
 	return JsonMap{
 		"success":  true,
 		"revision": result.Revision,
@@ -696,7 +711,7 @@ func (h *KintoneHandlers) readSingleRecord(ctx context.Context, appID, recordID 
 	var result struct {
 		Record JsonMap `json:"record"`
 	}
-	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/record.json?app=%s&id=%s", h.URL, appID, recordID), nil, &result)
+	errBody := h.SendHTTP("GET", "/k/v1/record.json", Query{"app": appID, "id": recordID}, nil, &result)
 
 	return result.Record, errBody
 }
@@ -729,7 +744,7 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 		}
 	}
 
-	if errBody := SendHTTP(h, "DELETE", fmt.Sprintf("%s/k/v1/records.json?app=%s&ids[0]=%s", h.URL, req.AppID, req.RecordID), nil, nil); errBody != nil {
+	if errBody := h.SendHTTP("DELETE", "/k/v1/records.json", Query{"app": req.AppID, "ids[0]": req.RecordID}, nil, nil); errBody != nil {
 		return nil, errBody
 	}
 
@@ -803,7 +818,7 @@ func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.Ra
 		Older    bool      `json:"older"`
 		Newer    bool      `json:"newer"`
 	}
-	errBody := SendHTTP(h, "GET", fmt.Sprintf("%s/k/v1/record/comments.json", h.URL), httpReq, &httpRes)
+	errBody := h.SendHTTP("GET", "/k/v1/record/comments.json", nil, httpReq, &httpRes)
 
 	return JsonMap{
 		"comments":            httpRes.Comments,
@@ -861,7 +876,7 @@ func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.R
 		"record":  req.RecordID,
 		"comment": req.Comment,
 	}
-	errBody := SendHTTP(h, "POST", fmt.Sprintf("%s/k/v1/record/comment.json", h.URL), httpReq, nil)
+	errBody := h.SendHTTP("POST", "/k/v1/record/comment.json", nil, httpReq, nil)
 
 	return JsonMap{
 		"success": true,
