@@ -43,6 +43,14 @@ type Content struct {
 	Blob string `json:"blob,omitempty"`
 }
 
+func JSONContent(v any) (*Content, error) {
+	bs, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return &Content{Type: "text", Text: string(bs)}, nil
+}
+
 type ToolInfo struct {
 	Name        string  `json:"name"`
 	Description string  `json:"description,omitempty"`
@@ -108,12 +116,12 @@ func (q Query) Encode() string {
 	return values.Encode()
 }
 
-func (h *KintoneHandlers) SendHTTP(method, path string, query Query, body any, result any) error {
+func (h *KintoneHandlers) SendHTTP(ctx context.Context, method, path string, query Query, body any) (*http.Response, error) {
 	var reqBody io.Reader
 	if body != nil {
 		bs, err := json.Marshal(body)
 		if err != nil {
-			return jsonrpc2.Error{
+			return nil, jsonrpc2.Error{
 				Code:    jsonrpc2.InternalErrorCode,
 				Message: fmt.Sprintf("Failed to prepare request body for kintone server: %v", err),
 			}
@@ -124,9 +132,9 @@ func (h *KintoneHandlers) SendHTTP(method, path string, query Query, body any, r
 	endpoint := h.URL.JoinPath(path)
 	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequest(method, endpoint.String(), reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), reqBody)
 	if err != nil {
-		return jsonrpc2.Error{
+		return nil, jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
 			Message: fmt.Sprintf("Failed to create HTTP request: %v", err),
 		}
@@ -144,21 +152,31 @@ func (h *KintoneHandlers) SendHTTP(method, path string, query Query, body any, r
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return jsonrpc2.Error{
+		return nil, jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
 			Message: fmt.Sprintf("Failed to send HTTP request to kintone server: %v", err),
 		}
 	}
-	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(res.Body)
-		return jsonrpc2.Error{
+		res.Body.Close()
+		return nil, jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
 			Message: "kintone server returned an error",
 			Data:    JsonMap{"status": res.Status, "message": string(msg)},
 		}
 	}
+
+	return res, nil
+}
+
+func (h *KintoneHandlers) FetchHTTP(ctx context.Context, method, path string, query Query, body any, result any) error {
+	res, err := h.SendHTTP(ctx, method, path, query, body)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
 
 	if result != nil {
 		if err := json.NewDecoder(res.Body).Decode(result); err != nil {
@@ -212,7 +230,7 @@ func (h *KintoneHandlers) ToolsList(ctx context.Context, params any) (ToolsListR
 }
 
 func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest) (ToolsCallResult, error) {
-	var content any
+	var content *Content
 	var err error
 
 	switch params.Name {
@@ -243,17 +261,9 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 		return ToolsCallResult{}, err
 	}
 
-	bytes, err := json.MarshalIndent(content, "", "  ")
-	if err != nil {
-		return ToolsCallResult{}, jsonrpc2.Error{
-			Code:    jsonrpc2.InternalErrorCode,
-			Message: fmt.Sprintf("Failed to prepare tool response: %v", err),
-		}
-	}
-
 	return ToolsCallResult{
 		Content: []Content{
-			{Type: "text", Text: string(bytes)},
+			*content,
 		},
 	}, nil
 }
@@ -301,7 +311,7 @@ func (h *KintoneHandlers) checkPermissions(id string, ps ...Perm) error {
 	}
 }
 
-func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) (any, error) {
+func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) (*Content, error) {
 	type HTTPReq struct {
 		IDs []string `json:"ids"`
 	}
@@ -313,9 +323,9 @@ func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) 
 	var httpRes struct {
 		Apps []KintoneAppDetail `json:"apps"`
 	}
-	errBody := h.SendHTTP("GET", "/k/v1/apps.json", nil, httpReq, &httpRes)
-	if errBody != nil {
-		return nil, errBody
+	err := h.FetchHTTP(ctx, "GET", "/k/v1/apps.json", nil, httpReq, &httpRes)
+	if err != nil {
+		return nil, err
 	}
 
 	for i, a := range httpRes.Apps {
@@ -328,15 +338,15 @@ func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) 
 		}
 	}
 
-	return httpRes.Apps, nil
+	return JSONContent(httpRes.Apps)
 }
 
-func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessage) (any, error) {
+func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessage) (*Content, error) {
 	var req struct {
 		AppID string `json:"appID"`
 	}
-	if errBody := UnmarshalParams(params, &req); errBody != nil {
-		return nil, errBody
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
 	}
 	if req.AppID == "" {
 		return nil, jsonrpc2.Error{
@@ -345,14 +355,13 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 		}
 	}
 
-	if errBody := h.checkPermissions(req.AppID, PermSomething); errBody != nil {
-		return nil, errBody
+	if err := h.checkPermissions(req.AppID, PermSomething); err != nil {
+		return nil, err
 	}
 
 	var app KintoneAppDetail
-	errBody := h.SendHTTP("GET", "/k/v1/app.json", Query{"id": req.AppID}, nil, &app)
-	if errBody != nil {
-		return nil, errBody
+	if err := h.FetchHTTP(ctx, "GET", "/k/v1/app.json", Query{"id": req.AppID}, nil, &app); err != nil {
+		return nil, err
 	}
 
 	app.DescriptionForAI = h.getApp(req.AppID).Description
@@ -361,20 +370,22 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 	var fields struct {
 		Properties JsonMap `json:"properties"`
 	}
-	errBody = h.SendHTTP("GET", "/k/v1/app/form/fields.json", Query{"app": req.AppID}, nil, &fields)
+	if err := h.FetchHTTP(ctx, "GET", "/k/v1/app/form/fields.json", Query{"app": req.AppID}, nil, &fields); err != nil {
+		return nil, err
+	}
 
 	app.Properties = fields.Properties
 
-	return app, errBody
+	return JSONContent(app)
 }
 
-func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessage) (any, error) {
+func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
 	var req struct {
 		AppID  string  `json:"appID"`
 		Record JsonMap `json:"record"`
 	}
-	if errBody := UnmarshalParams(params, &req); errBody != nil {
-		return nil, errBody
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
 	}
 	if req.AppID == "" || req.Record == nil {
 		return nil, jsonrpc2.Error{
@@ -394,15 +405,17 @@ func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessa
 	var record struct {
 		ID string `json:"id"`
 	}
-	errBody := h.SendHTTP("POST", "/k/v1/record.json", nil, httpReq, &record)
+	if err := h.FetchHTTP(ctx, "POST", "/k/v1/record.json", nil, httpReq, &record); err != nil {
+		return nil, err
+	}
 
-	return JsonMap{
+	return JSONContent(JsonMap{
 		"success":  true,
 		"recordID": record.ID,
-	}, errBody
+	})
 }
 
-func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessage) (any, error) {
+func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessage) (*Content, error) {
 	var req struct {
 		AppID  string   `json:"appID"`
 		Query  string   `json:"query"`
@@ -410,8 +423,8 @@ func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessag
 		Fields []string `json:"fields"`
 		Offset int      `json:"offset"`
 	}
-	if errBody := UnmarshalParams(params, &req); errBody != nil {
-		return nil, errBody
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
 	}
 	if req.AppID == "" {
 		return nil, jsonrpc2.Error{
@@ -451,18 +464,21 @@ func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessag
 	}
 
 	var records JsonMap
-	errBody := h.SendHTTP("GET", "/k/v1/records.json", nil, httpReq, &records)
-	return records, errBody
+	if err := h.FetchHTTP(ctx, "GET", "/k/v1/records.json", nil, httpReq, &records); err != nil {
+		return nil, err
+	}
+
+	return JSONContent(records)
 }
 
-func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessage) (any, error) {
+func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
 		Record   any    `json:"record"`
 	}
-	if errBody := UnmarshalParams(params, &req); errBody != nil {
-		return nil, errBody
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
 	}
 	if req.AppID == "" || req.RecordID == "" || req.Record == nil {
 		return nil, jsonrpc2.Error{
@@ -483,23 +499,26 @@ func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessa
 	var result struct {
 		Revision string `json:"revision"`
 	}
-	errBody := h.SendHTTP("PUT", "/k/v1/record.json", nil, httpReq, &result)
-	return JsonMap{
+	if err := h.FetchHTTP(ctx, "PUT", "/k/v1/record.json", nil, httpReq, &result); err != nil {
+		return nil, err
+	}
+
+	return JSONContent(JsonMap{
 		"success":  true,
 		"revision": result.Revision,
-	}, errBody
+	})
 }
 
 func (h *KintoneHandlers) readSingleRecord(ctx context.Context, appID, recordID string) (JsonMap, error) {
 	var result struct {
 		Record JsonMap `json:"record"`
 	}
-	errBody := h.SendHTTP("GET", "/k/v1/record.json", Query{"app": appID, "id": recordID}, nil, &result)
+	err := h.FetchHTTP(ctx, "GET", "/k/v1/record.json", Query{"app": appID, "id": recordID}, nil, &result)
 
-	return result.Record, errBody
+	return result.Record, err
 }
 
-func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessage) (any, error) {
+func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -527,8 +546,8 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 		}
 	}
 
-	if errBody := h.SendHTTP("DELETE", "/k/v1/records.json", Query{"app": req.AppID, "ids[0]": req.RecordID}, nil, nil); errBody != nil {
-		return nil, errBody
+	if err := h.FetchHTTP(ctx, "DELETE", "/k/v1/records.json", Query{"app": req.AppID, "ids[0]": req.RecordID}, nil, nil); err != nil {
+		return nil, err
 	}
 
 	result := JsonMap{
@@ -537,10 +556,10 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 	if deletedRecord != nil {
 		result["deletedRecord"] = deletedRecord
 	}
-	return result, nil
+	return JSONContent(result)
 }
 
-func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) (any, error) {
+func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) (*Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -548,8 +567,8 @@ func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.Ra
 		Offset   int    `json:"offset"`
 		Limit    *int   `json:"limit"`
 	}
-	if errBody := UnmarshalParams(params, &req); errBody != nil {
-		return nil, errBody
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
 	}
 
 	if req.AppID == "" || req.RecordID == "" {
@@ -601,16 +620,18 @@ func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.Ra
 		Older    bool      `json:"older"`
 		Newer    bool      `json:"newer"`
 	}
-	errBody := h.SendHTTP("GET", "/k/v1/record/comments.json", nil, httpReq, &httpRes)
+	if err := h.FetchHTTP(ctx, "GET", "/k/v1/record/comments.json", nil, httpReq, &httpRes); err != nil {
+		return nil, err
+	}
 
-	return JsonMap{
+	return JSONContent(JsonMap{
 		"comments":            httpRes.Comments,
 		"existsOlderComments": httpRes.Older,
 		"existsNewerComments": httpRes.Newer,
-	}, errBody
+	})
 }
 
-func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.RawMessage) (any, error) {
+func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.RawMessage) (*Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -622,8 +643,8 @@ func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.R
 			} `json:"mentions"`
 		} `json:"comment"`
 	}
-	if errBody := UnmarshalParams(params, &req); errBody != nil {
-		return nil, errBody
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
 	}
 
 	if req.AppID == "" || req.RecordID == "" || req.Comment.Text == "" {
@@ -659,11 +680,13 @@ func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.R
 		"record":  req.RecordID,
 		"comment": req.Comment,
 	}
-	errBody := h.SendHTTP("POST", "/k/v1/record/comment.json", nil, httpReq, nil)
+	if err := h.FetchHTTP(ctx, "POST", "/k/v1/record/comment.json", nil, httpReq, nil); err != nil {
+		return nil, err
+	}
 
-	return JsonMap{
+	return JSONContent(JsonMap{
 		"success": true,
-	}, errBody
+	})
 }
 
 type KintoneAppConfig struct {
