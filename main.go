@@ -92,7 +92,7 @@ type KintoneAppDetail struct {
 }
 
 type KintoneHandlers struct {
-	URL   string
+	URL   *url.URL
 	Auth  string
 	Token string
 	Apps  []KintoneAppConfig
@@ -108,7 +108,7 @@ func (q Query) Encode() string {
 	return values.Encode()
 }
 
-func (h *KintoneHandlers) SendHTTP(method, url string, query Query, body any, result any) error {
+func (h *KintoneHandlers) SendHTTP(method, path string, query Query, body any, result any) error {
 	var reqBody io.Reader
 	if body != nil {
 		bs, err := json.Marshal(body)
@@ -121,11 +121,10 @@ func (h *KintoneHandlers) SendHTTP(method, url string, query Query, body any, re
 		reqBody = bytes.NewReader(bs)
 	}
 
-	if query != nil {
-		url += "?" + query.Encode()
-	}
+	endpoint := h.URL.JoinPath(path)
+	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequest(method, h.URL+url, reqBody)
+	req, err := http.NewRequest(method, endpoint.String(), reqBody)
 	if err != nil {
 		return jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
@@ -157,12 +156,12 @@ func (h *KintoneHandlers) SendHTTP(method, url string, query Query, body any, re
 		return jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
 			Message: "kintone server returned an error",
-			Data:    JsonMap{"statusCode": res.Status, "message": string(msg)},
+			Data:    JsonMap{"status": res.Status, "message": string(msg)},
 		}
 	}
 
 	if result != nil {
-		if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		if err := json.NewDecoder(res.Body).Decode(result); err != nil {
 			return jsonrpc2.Error{
 				Code:    jsonrpc2.InternalErrorCode,
 				Message: fmt.Sprintf("Failed to parse kintone server's response: %v", err),
@@ -260,9 +259,9 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 }
 
 func (h *KintoneHandlers) getApp(id string) *KintoneAppConfig {
-	for _, app := range h.Apps {
+	for i, app := range h.Apps {
 		if app.ID == id {
-			return &app
+			return &h.Apps[i]
 		}
 	}
 	return nil
@@ -762,7 +761,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		handlers.URL = conf.URL
+		if u, err := url.Parse(conf.URL); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to parse URL: %v\n", err)
+			os.Exit(1)
+		} else {
+			handlers.URL = u
+		}
 		if conf.Username != "" && conf.Password != "" {
 			handlers.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", conf.Username, conf.Password)))
 		}
