@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -886,20 +887,27 @@ func (a *KintoneAppConfig) UnmarshalJSON(data []byte) error {
 	a.ID = tmp.ID
 	a.Description = tmp.Description
 
-	if v, ok := tmp.Permissions["read"]; ok {
-		a.Permissions.Read = v.(bool)
-	} else {
-		a.Permissions.Read = true // read is default true
+	getPerm := func(key string, default_ bool) (bool, error) {
+		if v, ok := tmp.Permissions[key]; ok {
+			if b, ok := v.(bool); ok {
+				return b, nil
+			} else {
+				return false, errors.New("members of 'permissions' must be boolean")
+			}
+		} else {
+			return default_, nil
+		}
 	}
-	if v, ok := tmp.Permissions["write"]; ok {
-		a.Permissions.Write = v.(bool)
-	} else {
-		a.Permissions.Write = false
+
+	var err error
+	if a.Permissions.Read, err = getPerm("read", true); err != nil {
+		return err
 	}
-	if v, ok := tmp.Permissions["delete"]; ok {
-		a.Permissions.Delete = v.(bool)
-	} else {
-		a.Permissions.Delete = false
+	if a.Permissions.Write, err = getPerm("write", false); err != nil {
+		return err
+	}
+	if a.Permissions.Delete, err = getPerm("delete", false); err != nil {
+		return err
 	}
 
 	return nil
