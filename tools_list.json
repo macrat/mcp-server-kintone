@@ -1,0 +1,283 @@
+{{ define "kintoneRecordProperties" }}
+{
+  "properties": {
+    "value": {
+      "anyOf": [
+        {
+          "description": "Usual values for text, number, etc.",
+          "type": "string"
+        },
+        {
+          "description": "Values for checkbox.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "description": "Values for table.",
+          "properties": {
+            "value": {
+              "items": {
+                "properties": {
+                  "value": {
+                    "additionalProperties": {
+                      "properties": {
+                        "value": {}
+                      },
+                      "required": [
+                        "value"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "required": [
+    "value"
+  ],
+  "type": "object"
+}
+{{ end }}
+
+{
+  "tools": [
+    {
+      "name": "listApps",
+      "description": "List all applications made on kintone. Response includes the app ID, name, and description.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "name": "readAppInfo",
+      "description": "Get information about the specified app. Response includes the app ID, name, description, and schema.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to get information from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appID"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "createRecord",
+      "description": "Create a new record in the specified app. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to create a record in.",
+            "type": "string"
+          },
+          "record": {
+            "additionalProperties": {{ template "kintoneRecordProperties" }},
+            "description": "The record data to create. Record data format is the same as kintone's record data format. For example, {\"field1\": {\"value\": \"value1\"}, \"field2\": {\"value\": \"value2\"}, \"field3\": {\"value\": \"value3\"}}.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "appID",
+          "record"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "readRecords",
+      "description": "Read records from the specified app. Response includes the record ID and record data. Before search records using this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to read records from.",
+            "type": "string"
+          },
+          "fields": {
+            "description": "The field codes to include in the response. Default is all fields.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "description": "The maximum number of records to read. Default is 10, maximum is 500.",
+            "type": "number"
+          },
+          "offset": {
+            "description": "The offset of records to read. Default is 0, maximum is 10,000.",
+            "type": "number"
+          },
+          "query": {
+            "description": "The query to filter records. Query format is the same as kintone's query format. For example, 'field1 = \"value1\" and (field2 like \"value2\"' or field3 not in (\"value3.1\",\"value3.2\")) and date > \"2006-01-02\"'.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appID"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "updateRecord",
+      "description": "Update the specified record in the specified app. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool and check which record to update by using 'readRecords' tool.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to update a record in.",
+            "type": "string"
+          },
+          "record": {
+            "additionalProperties": {{ template "kintoneRecordProperties" }},
+            "description": "The record data to update. Record data format is the same as kintone's record data format. For example, {\"field1\": {\"value\": \"value1\"}, \"field2\": {\"value\": \"value2\"}, \"field3\": {\"value\": \"value3\"}}. Omits the field that you don't want to update.",
+            "type": "object"
+          },
+          "recordID": {
+            "description": "The record ID to update.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appID",
+          "recordID",
+          "record"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "deleteRecord",
+      "description": "Delete the specified record in the specified app. Before use this tool, you should check which record to delete by using 'readRecords' tool. This operation is unrecoverable, so make sure that the user really want to delete the record.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to delete a record from.",
+            "type": "string"
+          },
+          "recordID": {
+            "description": "The record ID to delete.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appID",
+          "recordID"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "readRecordComments",
+      "description": "Read comments on the specified record in the specified app.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to read comments from.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "The maximum number of comments to read. Default is 10, maximum is 10.",
+            "type": "number"
+          },
+          "offset": {
+            "description": "The offset of comments to read. Default is 0.",
+            "type": "number"
+          },
+          "order": {
+            "description": "The order of comments. Default is 'desc'.",
+            "type": "string"
+          },
+          "recordID": {
+            "description": "The record ID to read comments from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appID",
+          "recordID"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "createRecordComment",
+      "description": "Create a new comment on the specified record in the specified app.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to create a comment in.",
+            "type": "string"
+          },
+          "comment": {
+            "properties": {
+              "mentions": {
+                "description": "The mention targets of the comment. The target can be a user, a group, or a organization.",
+                "items": {
+                  "properties": {
+                    "code": {
+                      "description": "The code of the mention target. You can get the code by other records or comments.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "description": "The type of the mention target. Default is 'USER'.",
+                      "enum": [
+                        "USER",
+                        "GROUP",
+                        "ORGANIZATION"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "text": {
+                "description": "The text of the comment.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          },
+          "recordID": {
+            "description": "The record ID to create a comment on.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appID",
+          "recordID",
+          "comment"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

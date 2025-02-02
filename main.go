@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"text/template"
 
 	"github.com/macrat/go-jsonrpc2"
 )
@@ -185,247 +187,29 @@ func (h *KintoneHandlers) InitializeHandler(ctx context.Context, params any) (In
 	}, nil
 }
 
-func (h *KintoneHandlers) ToolsList(ctx context.Context, params any) (ToolsListResult, error) {
-	kintoneRecord := JsonMap{
-		"type":        "object",
-		"description": `The record data to create. Record data format is the same as kintone's record data format. For example, {"field1": {"value": "value1"}, "field2": {"value": "value2"}, "field3": {"value": "value3"}}.`,
-		"additionalProperties": JsonMap{
-			"type":     "object",
-			"required": []string{"value"},
-			"properties": JsonMap{
-				"value": JsonMap{
-					"anyOf": []JsonMap{
-						{
-							"type":        "string",
-							"description": "Usual values for text, number, etc.",
-						},
-						{
-							"type":        "array",
-							"description": "Values for checkbox.",
-							"items": JsonMap{
-								"type": "string",
-							},
-						},
-						{
-							"type":        "object",
-							"description": "Values for table.",
-							"required":    []string{"value"},
-							"properties": JsonMap{
-								"value": JsonMap{
-									"type": "array",
-									"items": JsonMap{
-										"type":     "object",
-										"required": []string{"value"},
-										"properties": JsonMap{
-											"value": JsonMap{
-												"type": "object",
-												"additionalProperties": JsonMap{
-													"type":     "object",
-													"required": []string{"value"},
-													"properties": JsonMap{
-														"value": JsonMap{},
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
+//go:embed tools_list.json
+var toolsListTmplStr string
+
+var toolsList ToolsListResult
+
+func init() {
+	tmpl, err := template.New("tools_list").Parse(toolsListTmplStr)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse tools list template: %v", err))
 	}
 
-	return ToolsListResult{
-		Tools: []ToolInfo{
-			{
-				Name:        "listApps",
-				Description: "List all applications made on kintone. Response includes the app ID, name, and description.",
-				InputSchema: JsonMap{
-					"type":       "object",
-					"properties": JsonMap{},
-				},
-			},
-			{
-				Name:        "readAppInfo",
-				Description: "Get information about the specified app. Response includes the app ID, name, description, and schema.",
-				InputSchema: JsonMap{
-					"type":     "object",
-					"required": []string{"appID"},
-					"properties": JsonMap{
-						"appID": JsonMap{
-							"type":        "string",
-							"description": "The app ID to get information from.",
-						},
-					},
-				},
-			},
-			{
-				Name:        "createRecord",
-				Description: "Create a new record in the specified app. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
-				InputSchema: JsonMap{
-					"type":     "object",
-					"required": []string{"appID", "record"},
-					"properties": JsonMap{
-						"appID": JsonMap{
-							"type":        "string",
-							"description": "The app ID to create a record in.",
-						},
-						"record": kintoneRecord,
-					},
-				},
-			},
-			{
-				Name:        "readRecords",
-				Description: "Read records from the specified app. Response includes the record ID and record data. Before search records using this tool, you better to know the schema of the app by using 'readAppInfo' tool.",
-				InputSchema: JsonMap{
-					"type":     "object",
-					"required": []string{"appID"},
-					"properties": JsonMap{
-						"appID": JsonMap{
-							"type":        "string",
-							"description": "The app ID to read records from.",
-						},
-						"query": JsonMap{
-							"type":        "string",
-							"description": "The query to filter records. Query format is the same as kintone's query format. For example, 'field1 = \"value1\" and (field2 like \"value2\"' or field3 not in (\"value3.1\",\"value3.2\")) and date > \"2006-01-02\"'.",
-						},
-						"fields": JsonMap{
-							"type":        "array",
-							"description": "The field codes to include in the response. Default is all fields.",
-							"items": JsonMap{
-								"type": "string",
-							},
-						},
-						"limit": JsonMap{
-							"type":        "number",
-							"description": "The maximum number of records to read. Default is 10, maximum is 500.",
-						},
-						"offset": JsonMap{
-							"type":        "number",
-							"description": "The offset of records to read. Default is 0, maximum is 10,000.",
-						},
-					},
-				},
-			},
-			{
-				Name:        "updateRecord",
-				Description: "Update the specified record in the specified app. Before use this tool, you better to know the schema of the app by using 'readAppInfo' tool and check which record to update by using 'readRecords' tool.",
-				InputSchema: JsonMap{
-					"type":     "object",
-					"required": []string{"appID", "recordID", "record"},
-					"properties": JsonMap{
-						"appID": JsonMap{
-							"type":        "string",
-							"description": "The app ID to update a record in.",
-						},
-						"recordID": JsonMap{
-							"type":        "string",
-							"description": "The record ID to update.",
-						},
-						"record": kintoneRecord,
-					},
-				},
-			},
-			{
-				Name:        "deleteRecord",
-				Description: "Delete the specified record in the specified app. Before use this tool, you should check which record to delete by using 'readRecords' tool. This operation is unrecoverable, so make sure that the user really want to delete the record.",
-				InputSchema: JsonMap{
-					"type":     "object",
-					"required": []string{"appID", "recordID"},
-					"properties": JsonMap{
-						"appID": JsonMap{
-							"type":        "string",
-							"description": "The app ID to delete a record from.",
-						},
-						"recordID": JsonMap{
-							"type":        "string",
-							"description": "The record ID to delete.",
-						},
-					},
-				},
-			},
-			{
-				Name:        "readRecordComments",
-				Description: "Read comments on the specified record in the specified app.",
-				InputSchema: JsonMap{
-					"type":     "object",
-					"required": []string{"appID", "recordID"},
-					"properties": JsonMap{
-						"appID": JsonMap{
-							"type":        "string",
-							"description": "The app ID to read comments from.",
-						},
-						"recordID": JsonMap{
-							"type":        "string",
-							"description": "The record ID to read comments from.",
-						},
-						"order": JsonMap{
-							"type":        "string",
-							"description": "The order of comments. Default is 'desc'.",
-						},
-						"offset": JsonMap{
-							"type":        "number",
-							"description": "The offset of comments to read. Default is 0.",
-						},
-						"limit": JsonMap{
-							"type":        "number",
-							"description": "The maximum number of comments to read. Default is 10, maximum is 10.",
-						},
-					},
-				},
-			},
-			{
-				Name:        "createRecordComment",
-				Description: "Create a new comment on the specified record in the specified app.",
-				InputSchema: JsonMap{
-					"type":     "object",
-					"required": []string{"appID", "recordID", "comment"},
-					"properties": JsonMap{
-						"appID": JsonMap{
-							"type":        "string",
-							"description": "The app ID to create a comment in.",
-						},
-						"recordID": JsonMap{
-							"type":        "string",
-							"description": "The record ID to create a comment on.",
-						},
-						"comment": JsonMap{
-							"type":     "object",
-							"required": []string{"text"},
-							"properties": JsonMap{
-								"text": JsonMap{
-									"type":        "string",
-									"description": "The text of the comment.",
-								},
-								"mentions": JsonMap{
-									"type":        "array",
-									"description": "The mention targets of the comment. The target can be a user, a group, or a organization.",
-									"items": JsonMap{
-										"type":     "object",
-										"required": []string{"code"},
-										"properties": JsonMap{
-											"code": JsonMap{
-												"type":        "string",
-												"description": "The code of the mention target. You can get the code by other records or comments.",
-											},
-											"type": JsonMap{
-												"type":        "string",
-												"description": "The type of the mention target. Default is 'USER'.",
-												"enum":        []string{"USER", "GROUP", "ORGANIZATION"},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}, nil
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, nil); err != nil {
+		panic(fmt.Sprintf("Failed to render tools list template: %v", err))
+	}
+
+	if err := json.Unmarshal(buf.Bytes(), &toolsList); err != nil {
+		panic(fmt.Sprintf("Failed to parse tools list JSON: %v", err))
+	}
+}
+
+func (h *KintoneHandlers) ToolsList(ctx context.Context, params any) (ToolsListResult, error) {
+	return toolsList, nil
 }
 
 func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest) (ToolsCallResult, error) {
