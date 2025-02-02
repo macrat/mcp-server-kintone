@@ -10,7 +10,7 @@ Japanese version: 日本語の説明は[README.ja.md](README.ja.md)にありま�
 
 ### 1. Install
 
-Download the latest release from the [rleases page](https://github.com/macrat/mcp-server-kintone/releases).
+Download the latest release from the [release page](https://github.com/macrat/mcp-server-kintone/releases).
 You can place the executable file anywhere you like.
 
 
