@@ -66,9 +66,8 @@ func NewResource(uri, mimeType string, r io.Reader) (*Resource, error) {
 }
 
 type Content struct {
-	Type     string   `json:"type"`
-	Text     string   `json:"text,omitempty"`
-	Resource Resource `json:"resource,omitempty"`
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 func JSONContent(v any) ([]Content, error) {
@@ -706,8 +705,8 @@ func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params jso
 	}
 	defer outFile.Close()
 
-	var buf bytes.Buffer
-	if _, err := io.Copy(io.MultiWriter(outFile, &buf), httpRes.Body); err != nil {
+	size, err := io.Copy(outFile, httpRes.Body)
+	if err != nil {
 		outFile.Close()
 		os.Remove(outPath)
 		return nil, jsonrpc2.Error{
@@ -717,24 +716,11 @@ func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params jso
 		}
 	}
 
-	resource, err := NewResource("kintone://file/"+req.FileKey, contentType, &buf)
-	if err != nil {
-		return nil, jsonrpc2.Error{
-			Code:    jsonrpc2.InternalErrorCode,
-			Message: fmt.Sprintf("Failed to read attachment file: %v", err),
-		}
-	}
-
-	return []Content{
-		{
-			Type: "text",
-			Text: fmt.Sprintf("Attachment file is saved to %s", outPath),
-		},
-		{
-			Type:     "resource",
-			Resource: *resource,
-		},
-	}, nil
+	return JSONContent(JsonMap{
+		"success":  true,
+		"filePath": outPath,
+		"size":     size,
+	})
 }
 
 func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) ([]Content, error) {
