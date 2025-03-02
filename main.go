@@ -551,13 +551,9 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 		return nil, err
 	}
 
-	var deletedRecord JsonMap
-	if h.checkPermissions(req.AppID) == nil {
-		var err error
-		deletedRecord, err = h.readSingleRecord(ctx, req.AppID, req.RecordID)
-		if err != nil {
-			return nil, err
-		}
+	deletedRecord, err := h.readSingleRecord(ctx, req.AppID, req.RecordID)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := h.FetchHTTP(ctx, "DELETE", "/k/v1/records.json", Query{"app": req.AppID, "ids[0]": req.RecordID}, nil, nil); err != nil {
