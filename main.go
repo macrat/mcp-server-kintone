@@ -42,30 +42,6 @@ type InitializeResult struct {
 	Instructions    string     `json:"instructions"`
 }
 
-type Resource struct {
-	URI      string `json:"uri"`
-	MIMEType string `json:"mimeType"`
-	Text     string `json:"text,omitempty"`
-	Blob     string `json:"blob,omitempty"`
-}
-
-func NewResource(uri, mimeType string, r io.Reader) (*Resource, error) {
-	if strings.HasPrefix(mimeType, "text/") {
-		bs, err := io.ReadAll(r)
-		if err != nil {
-			return nil, err
-		}
-		return &Resource{URI: uri, MIMEType: mimeType, Text: string(bs)}, nil
-	} else {
-		var buf bytes.Buffer
-		enc := base64.NewEncoder(base64.StdEncoding, &buf)
-		if _, err := io.Copy(enc, r); err != nil {
-			return nil, err
-		}
-		return &Resource{URI: uri, MIMEType: mimeType, Blob: buf.String()}, nil
-	}
-}
-
 type Content struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
