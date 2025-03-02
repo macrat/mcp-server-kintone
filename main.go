@@ -367,9 +367,11 @@ func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) 
 		}
 	}
 
-	var httpRes struct {
+	type Res struct {
 		Apps []KintoneAppDetail `json:"apps"`
 	}
+
+	var httpRes Res
 	err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/apps.json", nil, req, &httpRes)
 	if err != nil {
 		return nil, err
@@ -382,8 +384,16 @@ func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) 
 		}
 	}
 
+	hasNext := false
+	var httpRes2 Res
+	err = h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/apps.json", nil, JsonMap{"offset": req.Offset + len(httpRes.Apps), "limit": 1}, &httpRes2)
+	if err == nil {
+		hasNext = len(httpRes2.Apps) > 0
+	}
+
 	return JSONContent(JsonMap{
-		"apps": apps,
+		"apps":    apps,
+		"hasNext": hasNext,
 	})
 }
 
