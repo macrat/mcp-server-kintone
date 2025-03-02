@@ -124,6 +124,9 @@ func NewKintoneHandlersFromEnv() (*KintoneHandlers, error) {
 		handlers.URL = u
 	}
 
+	handlers.Allow = GetenvList("KINTONE_ALLOW_APPS")
+	handlers.Deny = GetenvList("KINTONE_DENY_APPS")
+
 	if len(errs) > 1 {
 		return nil, errors.Join(errs...)
 	}
