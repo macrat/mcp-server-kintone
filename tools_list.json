@@ -83,7 +83,20 @@
       "name": "listApps",
       "description": "List all applications made on kintone. Response includes the app ID, name, and description.",
       "inputSchema": {
-        "properties": {},
+        "properties": {
+			"offset": {
+				"description": "The offset of apps to read. Default is 0.",
+				"type": "number"
+			},
+			"limit": {
+				"description": "The maximum number of apps to read. Default is 100, maximum is 100. The result might be different from the limit because of the permission.",
+				"type": "number"
+			},
+			"name": {
+				"description": "The name or a part of name of the apps to search.",
+				"type": "string"
+			}
+		},
         "type": "object"
       }
     },

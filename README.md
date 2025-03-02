@@ -1,6 +1,6 @@
 # MCP server for kintone
 
-[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for [kintone](https://kintone.cybozu.co.jp/).
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for [kintone](https://www.kintone.com/).
 This server allows you to explore and manipulate kintone data using AI tools such as [Claude Desktop](https://claude.ai/download)!
 
 Japanese version: 日本語の説明は[README.ja.md](README.ja.md)にあります。
@@ -14,88 +14,7 @@ Download the latest release from the [release page](https://github.com/macrat/mc
 You can place the executable file anywhere you like.
 
 
-### 2. Configure mcp-server-kintone
-
-Create a configuration file like below:
-
-```json
-{
-    "url": "https://<your-domain>.cybozu.com",
-    "username": "<your-username>",
-    "password": "<your-password>",
-    "token": "<your-app-token-1>, <your-app-token-2>, ...",
-    "apps": [
-        {
-            "id": "<your-app-id>",
-            "description": "<your-app-description>",
-            "permissions": {
-                "read": true,
-                "write": false,
-                "delete": false
-            }
-        }
-    ]
-}
-```
-
-**Configuration parameters:**
-
-- `url`: (required) URL of your kintone domain.
-
-- `username`: (optional) Username for login.
-
-- `password`: (optional) Password for login.
-
-- `token`: (optional) App tokens for login.
-
-- `apps`: (required) List of apps you want to access.
-  - `id`: (required) App ID.
-  - `description`: (optional) App description for AI.
-  - `permissions`: (optional) Permissions for AI.
-    - `read`: (optional) Read permission. Default is `true`.
-    - `write`: (optional) Write permission. Default is `false`.
-    - `delete`: (optional) Delete permission. Default is `false`.
-
-**Notes:**
-
-- For connect to kintone, at least of `username` and `password` or `token` is required.
-
-- Please make sure that all apps you want to access are included in the `apps` list.
-  For security reasons, this server does not allow clients to access apps that are not included in the `apps` list.
-
-
-For example, your configuration file should look like this:
-
-```json
-{
-    "url": "https://example.cybozu.com",
-    "username": "alice",
-    "password": "password",
-    "apps": [
-        {
-            "id": "1",
-            "description": "An app that stores information about customers. It contains the name of the person in charge and contact information.",
-            "permissions": {
-                "read": true,
-                "write": false,
-                "delete": false
-            }
-        },
-        {
-            "id": "2",
-            "description": "An app that stores information about projects. It contains an overview of the project and its progress.",
-            "permissions": {
-                "read": true,
-                "write": true,
-                "delete": false
-            }
-        }
-    ]
-}
-```
-
-
-### 3. Configure MCP client like Claude Desktop
+### 2. Configure MCP client like Claude Desktop
 
 Configure your client to connect to the server.
 
@@ -110,18 +29,32 @@ Add the following configuration to the `mcpServers` section:
   "mcpServers": {
     "kintone": {
       "command": "C:\\path\\to\\mcp-server-kintone.exe",
-      "args": [
-        "C:\\path\\to\\configuration.json"
-      ]
+      "env": {
+        "KINTONE_BASE_URL": "https://<domain>.cybozu.com",
+        "KINTONE_USERNAME": "<your username>",
+        "KINTONE_PASSWORD": "<your password>",
+        "KINTONE_API_TOKEN": "<your api token>, <another api token>, ...",
+        "KINTONE_ALLOW_APPS": "1, 2, 3, ...",
+        "KINTONE_DENY_APPS": "4, 5, ..."
+      }
     }
   }
 }
 ```
 
+**Environment variables**:
+- `KINTONE_BASE_URL`: **(Required)** The base URL of your kintone.
+- `KINTONE_USERNAME`: Your username for kintone.
+- `KINTONE_PASSWORD`: Your password for kintone.
+- `KINTONE_API_TOKEN`: Comma separated API token for kintone.
+  You need to set either `KINTONE_USERNAME` and `KINTONE_PASSWORD` or `KINTONE_API_TOKEN`.
+- `KINTONE_ALLOW_APPS`: A comma-separated list of app IDs that you want to allow access. In default, all apps are allowed.
+- `KINTONE_DENY_APPS`: A comma-separated list of app IDs that you want to deny access. The deny has a higher priority than the allow.
+
 You may need to restart Claude Desktop to apply the changes.
 
 
-### 4. Start to use
+### 3. Start to use
 
 Now you can interact with kintone using your own AI tools!
 

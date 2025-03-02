@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -95,12 +96,6 @@ type ToolsCallResult struct {
 	IsError bool      `json:"isError"`
 }
 
-type Permissions struct {
-	Read   bool `json:"read"`
-	Write  bool `json:"write"`
-	Delete bool `json:"delete"`
-}
-
 func UnmarshalParams[T any](data []byte, target *T) error {
 	err := json.Unmarshal(data, target)
 	if err != nil {
@@ -113,21 +108,51 @@ func UnmarshalParams[T any](data []byte, target *T) error {
 }
 
 type KintoneAppDetail struct {
-	AppID            string      `json:"appID"`
-	Name             string      `json:"name"`
-	Description      string      `json:"description,omitempty"`
-	DescriptionForAI string      `json:"description_for_ai,omitempty"`
-	Properties       JsonMap     `json:"properties,omitempty"`
-	CreatedAt        string      `json:"createdAt"`
-	ModifiedAt       string      `json:"modifiedAt"`
-	Permissions      Permissions `json:"permissions"`
+	AppID       string  `json:"appID"`
+	Name        string  `json:"name"`
+	Description string  `json:"description,omitempty"`
+	Properties  JsonMap `json:"properties,omitempty"`
+	CreatedAt   string  `json:"createdAt"`
+	ModifiedAt  string  `json:"modifiedAt"`
 }
 
 type KintoneHandlers struct {
 	URL   *url.URL
 	Auth  string
 	Token string
-	Apps  []KintoneAppConfig
+	Allow []string
+	Deny  []string
+}
+
+func NewKintoneHandlersFromEnv() (*KintoneHandlers, error) {
+	var handlers KintoneHandlers
+	errs := []error{errors.New("Error:")}
+
+	username := Getenv("KINTONE_USERNAME", "")
+	password := Getenv("KINTONE_PASSWORD", "")
+	tokens := Getenv("KINTONE_API_TOKEN", "")
+	if (username == "" || password == "") && tokens == "" {
+		errs = append(errs, errors.New("- Either KINTONE_USERNAME/KINTONE_PASSWORD or KINTONE_API_TOKEN must be provided"))
+	}
+	if username != "" && password != "" {
+		handlers.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", username, password)))
+	}
+	handlers.Token = tokens
+
+	baseURL := Getenv("KINTONE_BASE_URL", "")
+	if baseURL == "" {
+		errs = append(errs, errors.New("- KINTONE_BASE_URL must be provided"))
+	} else if u, err := url.Parse(baseURL); err != nil {
+		errs = append(errs, fmt.Errorf("- Failed to parse KINTONE_BASE_URL: %s", err))
+	} else {
+		handlers.URL = u
+	}
+
+	if len(errs) > 1 {
+		return nil, errors.Join(errs...)
+	}
+
+	return &handlers, nil
 }
 
 type Query map[string]string
@@ -294,77 +319,66 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 	}, nil
 }
 
-func (h *KintoneHandlers) getApp(id string) *KintoneAppConfig {
-	for i, app := range h.Apps {
-		if app.ID == id {
-			return &h.Apps[i]
+func (h *KintoneHandlers) checkPermissions(id string) error {
+	if slices.Contains(h.Deny, id) {
+		return jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: fmt.Sprintf("App ID %s is inaccessible because it is listed in the KINTONE_DENY_APPS environment variable. Please check the MCP server settings.", id),
 		}
 	}
+	if len(h.Allow) > 0 && !slices.Contains(h.Allow, id) {
+		return jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: fmt.Sprintf("App ID %s is inaccessible because it is not listed in the KINTONE_ALLOW_APPS environment variable. Please check the MCP server settings.", id),
+		}
+	}
+
 	return nil
 }
 
-type Perm string
-
-const (
-	PermSomething Perm = "do something"
-	PermRead      Perm = "read"
-	PermWrite     Perm = "write"
-	PermDelete    Perm = "delete"
-)
-
-func (h *KintoneHandlers) checkPermissions(id string, ps ...Perm) error {
-	app := h.getApp(id)
-	if app == nil {
-		return jsonrpc2.Error{
-			Code:    jsonrpc2.InvalidParamsCode,
-			Message: fmt.Sprintf("App ID %s is not found or not allowed to access. Please check the MCP server settings and/or ask to the administrator.", id),
-		}
-	}
-	for _, p := range ps {
-		if (p == PermRead && app.Permissions.Read) || (p == PermWrite && app.Permissions.Write) || (p == PermDelete && app.Permissions.Delete) || (p == PermSomething) {
-			return nil
-		}
-	}
-
-	ss := make([]string, len(ps))
-	for i, p := range ps {
-		ss[i] = string(p)
-	}
-
-	return jsonrpc2.Error{
-		Code:    jsonrpc2.InvalidParamsCode,
-		Message: fmt.Sprintf("Permission denied to %s records in app ID %s. Please check the MCP server settings and/or ask to the administrator.", strings.Join(ss, ", "), id),
-	}
-}
-
 func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) (*Content, error) {
-	type HTTPReq struct {
-		IDs []string `json:"ids"`
+	var req struct {
+		Offset int     `json:"offset"`
+		Limit  *int    `json:"limit"`
+		Name   *string `json:"name"`
 	}
-	var httpReq HTTPReq
-	for _, app := range h.Apps {
-		httpReq.IDs = append(httpReq.IDs, app.ID)
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
+	}
+	if req.Offset < 0 {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Offset must be greater than or equal to 0",
+		}
+	}
+	if req.Limit == nil {
+		limit := 100
+		req.Limit = &limit
+	} else if *req.Limit < 1 || *req.Limit > 100 {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Limit must be between 1 and 100",
+		}
 	}
 
 	var httpRes struct {
 		Apps []KintoneAppDetail `json:"apps"`
 	}
-	err := h.FetchHTTP(ctx, "GET", "/k/v1/apps.json", nil, httpReq, &httpRes)
+	err := h.FetchHTTP(ctx, "GET", "/k/v1/apps.json", nil, req, &httpRes)
 	if err != nil {
 		return nil, err
 	}
 
-	for i, a := range httpRes.Apps {
-		for _, b := range h.Apps {
-			if a.AppID == b.ID {
-				httpRes.Apps[i].DescriptionForAI = b.Description
-				httpRes.Apps[i].Permissions = b.Permissions
-				break
-			}
+	apps := make([]KintoneAppDetail, 0, len(httpRes.Apps))
+	for _, app := range httpRes.Apps {
+		if err := h.checkPermissions(app.AppID); err == nil {
+			apps = append(apps, app)
 		}
 	}
 
-	return JSONContent(httpRes.Apps)
+	return JSONContent(JsonMap{
+		"apps": apps,
+	})
 }
 
 func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessage) (*Content, error) {
@@ -381,7 +395,7 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 		}
 	}
 
-	if err := h.checkPermissions(req.AppID, PermSomething); err != nil {
+	if err := h.checkPermissions(req.AppID); err != nil {
 		return nil, err
 	}
 
@@ -389,9 +403,6 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 	if err := h.FetchHTTP(ctx, "GET", "/k/v1/app.json", Query{"id": req.AppID}, nil, &app); err != nil {
 		return nil, err
 	}
-
-	app.DescriptionForAI = h.getApp(req.AppID).Description
-	app.Permissions = h.getApp(req.AppID).Permissions
 
 	var fields struct {
 		Properties JsonMap `json:"properties"`
@@ -420,7 +431,7 @@ func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessa
 		}
 	}
 
-	if err := h.checkPermissions(req.AppID, PermWrite); err != nil {
+	if err := h.checkPermissions(req.AppID); err != nil {
 		return nil, err
 	}
 
@@ -476,7 +487,7 @@ func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessag
 		}
 	}
 
-	if err := h.checkPermissions(req.AppID, PermRead); err != nil {
+	if err := h.checkPermissions(req.AppID); err != nil {
 		return nil, err
 	}
 
@@ -513,7 +524,7 @@ func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessa
 		}
 	}
 
-	if err := h.checkPermissions(req.AppID, PermWrite); err != nil {
+	if err := h.checkPermissions(req.AppID); err != nil {
 		return nil, err
 	}
 
@@ -559,12 +570,12 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 		}
 	}
 
-	if err := h.checkPermissions(req.AppID, PermDelete); err != nil {
+	if err := h.checkPermissions(req.AppID); err != nil {
 		return nil, err
 	}
 
 	var deletedRecord JsonMap
-	if h.checkPermissions(req.AppID, PermRead) == nil {
+	if h.checkPermissions(req.AppID) == nil {
 		var err error
 		deletedRecord, err = h.readSingleRecord(ctx, req.AppID, req.RecordID)
 		if err != nil {
@@ -669,7 +680,7 @@ func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.Ra
 		}
 	}
 
-	if err := h.checkPermissions(req.AppID, PermRead); err != nil {
+	if err := h.checkPermissions(req.AppID); err != nil {
 		return nil, err
 	}
 
@@ -736,7 +747,7 @@ func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.R
 		}
 	}
 
-	if err := h.checkPermissions(req.AppID, PermRead, PermWrite); err != nil {
+	if err := h.checkPermissions(req.AppID); err != nil {
 		return nil, err
 	}
 
@@ -754,57 +765,25 @@ func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.R
 	})
 }
 
-type KintoneAppConfig struct {
-	ID          string      `json:"id"`
-	Description string      `json:"description"`
-	Permissions Permissions `json:"permissions"`
+func Getenv(key, defaultValue string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultValue
 }
 
-func (a *KintoneAppConfig) UnmarshalJSON(data []byte) error {
-	var tmp struct {
-		ID          string  `json:"id"`
-		Description string  `json:"description"`
-		Permissions JsonMap `json:"permissions"`
-	}
-	if err := json.Unmarshal(data, &tmp); err != nil {
-		return err
-	}
-
-	a.ID = tmp.ID
-	a.Description = tmp.Description
-
-	getPerm := func(key string, default_ bool) (bool, error) {
-		if v, ok := tmp.Permissions[key]; ok {
-			if b, ok := v.(bool); ok {
-				return b, nil
-			} else {
-				return false, errors.New("members of 'permissions' must be boolean")
+func GetenvList(key string) []string {
+	if v := os.Getenv(key); v != "" {
+		raw := strings.Split(v, ",")
+		ss := make([]string, 0, len(raw))
+		for _, s := range raw {
+			if s != "" {
+				ss = append(ss, strings.TrimSpace(s))
 			}
-		} else {
-			return default_, nil
 		}
+		return ss
 	}
-
-	var err error
-	if a.Permissions.Read, err = getPerm("read", true); err != nil {
-		return err
-	}
-	if a.Permissions.Write, err = getPerm("write", false); err != nil {
-		return err
-	}
-	if a.Permissions.Delete, err = getPerm("delete", false); err != nil {
-		return err
-	}
-
 	return nil
-}
-
-type Configuration struct {
-	URL      string             `json:"url"`
-	Username string             `json:"username,omitempty"`
-	Password string             `json:"password,omitempty"`
-	Token    string             `json:"token,omitempty"`
-	Apps     []KintoneAppConfig `json:"apps"`
 }
 
 type MergedReadWriter struct {
@@ -821,45 +800,10 @@ func (rw *MergedReadWriter) Write(p []byte) (int, error) {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "MCP (Model Context Protocol) Server for kintone.\n")
-		fmt.Fprintf(os.Stderr, "Version: %s (%s)\n", Version, Commit)
-		fmt.Fprintf(os.Stderr, "Usage: %s <path to settings file>\n", os.Args[0])
+	handlers, err := NewKintoneHandlersFromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
 		os.Exit(1)
-	}
-
-	handlers := &KintoneHandlers{}
-
-	if f, err := os.Open(os.Args[1]); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to read config file: %v\n", err)
-		os.Exit(1)
-	} else {
-		var conf Configuration
-		if err := json.NewDecoder(f).Decode(&conf); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to parse config file: %v\n", err)
-			os.Exit(1)
-		}
-
-		if (conf.Username == "" || conf.Password == "") && conf.Token == "" {
-			fmt.Fprintf(os.Stderr, "Either username/password or token must be provided\n")
-			os.Exit(1)
-		}
-		if len(conf.Apps) == 0 {
-			fmt.Fprintf(os.Stderr, "At least one app must be provided\n")
-			os.Exit(1)
-		}
-
-		if u, err := url.Parse(conf.URL); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to parse URL: %v\n", err)
-			os.Exit(1)
-		} else {
-			handlers.URL = u
-		}
-		if conf.Username != "" && conf.Password != "" {
-			handlers.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", conf.Username, conf.Password)))
-		}
-		handlers.Token = conf.Token
-		handlers.Apps = conf.Apps
 	}
 
 	server := jsonrpc2.NewServer()
