@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -170,14 +171,18 @@ func (q Query) Encode() string {
 func (h *KintoneHandlers) SendHTTP(ctx context.Context, method, path string, query Query, body any) (*http.Response, error) {
 	var reqBody io.Reader
 	if body != nil {
-		bs, err := json.Marshal(body)
-		if err != nil {
-			return nil, jsonrpc2.Error{
-				Code:    jsonrpc2.InternalErrorCode,
-				Message: fmt.Sprintf("Failed to prepare request body for kintone server: %v", err),
+		if _, ok := body.(io.Reader); ok {
+			reqBody = body.(io.Reader)
+		} else {
+			bs, err := json.Marshal(body)
+			if err != nil {
+				return nil, jsonrpc2.Error{
+					Code:    jsonrpc2.InternalErrorCode,
+					Message: fmt.Sprintf("Failed to prepare request body for kintone server: %v", err),
+				}
 			}
+			reqBody = bytes.NewReader(bs)
 		}
-		reqBody = bytes.NewReader(bs)
 	}
 
 	endpoint := h.URL.JoinPath(path)
@@ -299,6 +304,8 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 		content, err = h.DeleteRecord(ctx, params.Arguments)
 	case "downloadAttachmentFile":
 		content, err = h.DownloadAttachmentFile(ctx, params.Arguments)
+	case "uploadAttachmentFile":
+		content, err = h.UploadAttachmentFile(ctx, params.Arguments)
 	case "readRecordComments":
 		content, err = h.ReadRecordComments(ctx, params.Arguments)
 	case "createRecordComment":
@@ -720,6 +727,119 @@ func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params jso
 		"success":  true,
 		"filePath": outPath,
 		"size":     size,
+	})
+}
+
+func (h *KintoneHandlers) UploadAttachmentFile(ctx context.Context, params json.RawMessage) ([]Content, error) {
+	var req struct {
+		Path    *string `json:"path"`
+		Name    string  `json:"name"`
+		Content *string `json:"content"`
+		Base64  bool    `json:"base64"`
+		Type    string  `json:"type"`
+	}
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
+	}
+
+	if req.Path == nil && req.Content == nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'path' or 'content' is required",
+		}
+	}
+	if req.Path != nil && req.Content != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'path' and 'content' are mutually exclusive",
+		}
+	}
+
+	var contentType string
+	if req.Path != nil {
+		contentType = mime.TypeByExtension(filepath.Ext(*req.Path))
+	} else if req.Type != "" {
+		contentType = req.Type
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	var filename string
+	if req.Path != nil {
+		filename = filepath.Base(*req.Path)
+	} else {
+		filename = req.Name
+		if filename == "" {
+			filename = "file"
+
+			ext, err := mime.ExtensionsByType(contentType)
+			if err == nil && len(ext) > 0 {
+				filename += ext[0]
+			}
+		}
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to prepare request: %v", err),
+		}
+	}
+
+	if req.Path != nil {
+		r, err := os.Open(*req.Path)
+		if err != nil {
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to open file: %v", err),
+			}
+		}
+		defer r.Close()
+
+		if _, err := io.Copy(part, r); err != nil {
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to read file content: %v", err),
+			}
+		}
+	} else if req.Base64 {
+		r := base64.NewDecoder(base64.StdEncoding, strings.NewReader(*req.Content))
+		if _, err := io.Copy(part, r); err != nil {
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to read file content: %v", err),
+			}
+		}
+	} else {
+		if _, err := part.Write([]byte(*req.Content)); err != nil {
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to read file content: %v", err),
+			}
+		}
+	}
+
+	if err := mw.Close(); err != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to finalize request: %v", err),
+		}
+	}
+
+	var res struct {
+		FileKey string `json:"fileKey"`
+	}
+	if err := h.FetchHTTP(ctx, "POST", "/k/v1/file.json", nil, body, &res); err != nil {
+		return nil, err
+	}
+
+	return JSONContent(JsonMap{
+		"success": true,
+		"fileKey": res.FileKey,
 	})
 }
 

@@ -238,6 +238,60 @@
       }
     },
     {
+      "name": "uploadAttachmentFile",
+      "description": "Upload a new attachment file to the specified app. The response includes a file key that you can use for creating or updating records.",
+      "inputSchema": {
+        "properties": {
+          "file": {
+            "oneOf": [
+              {
+                "description": "The file to upload. You can specify the file by path.",
+                "properties": {
+                  "path": {
+                    "description": "The path of the file to upload.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The file to upload. You can specify the file by content.",
+                "properties": {
+                  "name": {
+                    "description": "The file name to upload.",
+                    "type": "string"
+                  },
+                  "content": {
+                    "description": "The content of the file to upload.",
+                    "type": "string"
+                  },
+                  "base64": {
+                    "description": "The content is base64 encoded or not. Default is false.",
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "description": "The content type of the file. Default is 'application/octet-stream'.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "content"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      }
+    },
+    {
       "name": "readRecordComments",
       "description": "Read comments on the specified record in the specified app.",
       "inputSchema": {
