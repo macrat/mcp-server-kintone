@@ -258,10 +258,6 @@
           "base64": {
             "description": "The `content` is base64 encoded or not. Default is false. This is only used when `content` is specified.",
             "type": "boolean"
-          },
-          "type": {
-            "description": "The content type of the `content`. Default is 'application/octet-stream'. This is only used when `content` is specified.",
-            "type": "string"
           }
         },
         "type": "object"
