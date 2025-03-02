@@ -43,8 +43,10 @@ type InitializeResult struct {
 }
 
 type Content struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
 func JSONContent(v any) ([]Content, error) {
@@ -697,22 +699,44 @@ func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params jso
 	}
 	defer outFile.Close()
 
-	size, err := io.Copy(outFile, httpRes.Body)
+	var w io.Writer = outFile
+	var buf *bytes.Buffer
+	if strings.HasPrefix(contentType, "text/") || strings.HasPrefix(contentType, "image/") {
+		buf = new(bytes.Buffer)
+		w = io.MultiWriter(outFile, buf)
+	}
+
+	size, err := io.Copy(w, httpRes.Body)
 	if err != nil {
 		outFile.Close()
 		os.Remove(outPath)
 		return nil, jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
-			Message: fmt.Sprintf("Failed to save attachment file: %v", err),
-			Data:    JsonMap{"filePath": outPath},
+			Message: fmt.Sprintf("Failed to save attachment file: %s: %v", outPath, err),
 		}
 	}
 
-	return JSONContent(JsonMap{
+	res, err := JSONContent(JsonMap{
 		"success":  true,
 		"filePath": outPath,
 		"size":     size,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.HasPrefix(contentType, "text/") {
+		res = append(res, Content{Type: "text", Text: buf.String()})
+	} else if strings.HasPrefix(contentType, "image/") {
+		b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+		res = append(res, Content{
+			Type:     "image",
+			Data:     b64,
+			MimeType: contentType,
+		})
+	}
+
+	return res, nil
 }
 
 func (h *KintoneHandlers) UploadAttachmentFile(ctx context.Context, params json.RawMessage) ([]Content, error) {
