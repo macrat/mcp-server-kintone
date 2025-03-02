@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -68,12 +71,12 @@ type Content struct {
 	Resource Resource `json:"resource,omitempty"`
 }
 
-func JSONContent(v any) (*Content, error) {
+func JSONContent(v any) ([]Content, error) {
 	bs, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-	return &Content{Type: "text", Text: string(bs)}, nil
+	return []Content{{Type: "text", Text: string(bs)}}, nil
 }
 
 type ToolInfo struct {
@@ -135,7 +138,7 @@ func NewKintoneHandlersFromEnv() (*KintoneHandlers, error) {
 		errs = append(errs, errors.New("- Either KINTONE_USERNAME/KINTONE_PASSWORD or KINTONE_API_TOKEN must be provided"))
 	}
 	if username != "" && password != "" {
-		handlers.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", username, password)))
+		handlers.Auth = base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "%s:%s", username, password))
 	}
 	handlers.Token = tokens
 
@@ -279,7 +282,7 @@ func (h *KintoneHandlers) ToolsList(ctx context.Context, params any) (ToolsListR
 }
 
 func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest) (ToolsCallResult, error) {
-	var content *Content
+	var content []Content
 	var err error
 
 	switch params.Name {
@@ -313,9 +316,7 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 	}
 
 	return ToolsCallResult{
-		Content: []Content{
-			*content,
-		},
+		Content: content,
 	}, nil
 }
 
@@ -336,7 +337,7 @@ func (h *KintoneHandlers) checkPermissions(id string) error {
 	return nil
 }
 
-func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		Offset int     `json:"offset"`
 		Limit  *int    `json:"limit"`
@@ -381,7 +382,7 @@ func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) 
 	})
 }
 
-func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID string `json:"appID"`
 	}
@@ -416,7 +417,7 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 	return JSONContent(app)
 }
 
-func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID  string  `json:"appID"`
 		Record JsonMap `json:"record"`
@@ -452,7 +453,7 @@ func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessa
 	})
 }
 
-func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID  string   `json:"appID"`
 		Query  string   `json:"query"`
@@ -508,7 +509,7 @@ func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessag
 	return JSONContent(records)
 }
 
-func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -555,7 +556,7 @@ func (h *KintoneHandlers) readSingleRecord(ctx context.Context, appID, recordID 
 	return result.Record, err
 }
 
-func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -596,7 +597,58 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 	return JSONContent(result)
 }
 
-func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params json.RawMessage) (*Content, error) {
+func getDownloadDirectory() string {
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		return os.TempDir()
+	}
+
+	for _, d := range []string{"Downloads", "downloads", "Download", "download"} {
+		d = filepath.Join(dir, d)
+		if _, err := os.Stat(d); err == nil {
+			return d
+		}
+	}
+
+	dir = filepath.Join(dir, "Downloads")
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		return os.TempDir()
+	}
+	return dir
+}
+
+func getDownloadFilePath(fileName string) string {
+	dir := getDownloadDirectory()
+
+	p := filepath.Join(dir, fileName)
+	if _, err := os.Stat(p); err != nil {
+		return p
+	}
+
+	ext := filepath.Ext(fileName)
+	base := strings.TrimSuffix(fileName, ext)
+
+	num := 1
+	if strings.HasSuffix(base, ")") {
+		if i := strings.LastIndex(base, " ("); i > 0 {
+			if n, err := strconv.Atoi(base[i+2:]); err == nil {
+				base = base[:i]
+				num = n
+			}
+		}
+	}
+
+	for {
+		p = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, num, ext))
+		if _, err := os.Stat(p); err != nil {
+			return p
+		}
+		num++
+	}
+}
+
+func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		FileKey string `json:"fileKey"`
 	}
@@ -621,7 +673,51 @@ func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params jso
 		contentType = "application/octet-stream"
 	}
 
-	resource, err := NewResource("kintone://file/"+req.FileKey, contentType, httpRes.Body)
+	var fileName string
+
+	_, ps, err := mime.ParseMediaType(httpRes.Header.Get("Content-Disposition"))
+	if err == nil {
+		fileName = ps["filename"]
+	}
+
+	fileName, err = new(mime.WordDecoder).DecodeHeader(fileName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to decode filename: %v\n", err)
+		fileName = ""
+	}
+
+	if fileName == "" {
+		fileName = req.FileKey
+
+		ext, err := mime.ExtensionsByType(contentType)
+		if err == nil && len(ext) > 0 {
+			fileName += ext[0]
+		}
+	}
+
+	outPath := getDownloadFilePath(fileName)
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to create file for attachment: %v", err),
+			Data:    JsonMap{"filePath": outPath},
+		}
+	}
+	defer outFile.Close()
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(io.MultiWriter(outFile, &buf), httpRes.Body); err != nil {
+		outFile.Close()
+		os.Remove(outPath)
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to save attachment file: %v", err),
+			Data:    JsonMap{"filePath": outPath},
+		}
+	}
+
+	resource, err := NewResource("kintone://file/"+req.FileKey, contentType, &buf)
 	if err != nil {
 		return nil, jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
@@ -629,13 +725,19 @@ func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params jso
 		}
 	}
 
-	return &Content{
-		Type:     "resource",
-		Resource: *resource,
+	return []Content{
+		{
+			Type: "text",
+			Text: fmt.Sprintf("Attachment file is saved to %s", outPath),
+		},
+		{
+			Type:     "resource",
+			Resource: *resource,
+		},
 	}, nil
 }
 
-func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -707,7 +809,7 @@ func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.Ra
 	})
 }
 
-func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
