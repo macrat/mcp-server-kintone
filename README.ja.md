@@ -14,87 +14,7 @@ English description is [README.md](README.md).
 ダウンロードした実行ファイルはどこに保存しても構いません。
 
 
-## 2. mcp-server-kintoneの設定ファイルを作る
-
-以下のような設定ファイルを作成してください。
-
-```json
-{
-    "url": "https://<契約ドメイン>.cybozu.com",
-    "username": "<ユーザー名>",
-    "password": "<パスワード>",
-    "token": "<アプリのトークン1>, <アプリのトークン2>, ...",
-    "apps": [
-        {
-            "id": "<アプリID>",
-            "description": "<アプリの説明>",
-            "permissions": {
-                "read": true,
-                "write": false,
-                "delete": false
-            }
-        }
-    ]
-}
-```
-
-**設定パラメータ:**
-
-- `url`: (必須) kintoneのドメインのURL。
-
-- `username`: (オプション) ログイン用のユーザー名。
-
-- `password`: (オプション) ログイン用のパスワード。
-
-- `token`: (オプション) ログイン用のアプリトークン。
-
-- `apps`: (必須) アクセスしたいアプリのリスト。
-  - `id`: (必須) アプリID。
-  - `description`: (オプション) AIに向けたアプリの説明。
-  - `permissions`: (オプション) AIに許可する操作。
-    - `read`: (オプション) 読み取り権限。デフォルトは`true`。
-    - `write`: (オプション) 書き込み権限。デフォルトは`false`。
-    - `delete`: (オプション) 削除権限。デフォルトは`false`。
-
-**注意:**
-
-- kintoneに接続するためには、`username`と`password`または`token`の少なくとも1つが必要です。
-
-- MCPを介して利用したい全てのアプリを `apps` に記載してください。
-  誤って機密情報をAIに読み取らせてしまわないように、 `apps` に書かれていないアプリへのアクセスを許可しないようになっています。
-
-実際の設定ファイルは、たとえば以下のようになるはずです。
-
-```json
-{
-    "url": "https://example.cybozu.com",
-    "username": "yuma_shida",
-    "password": "password123",
-    "apps": [
-        {
-            "id": "1",
-            "description": "お客様の情報が格納されたアプリです。担当者名や連絡先などが乗っています。",
-            "permissions": {
-                "read": true,
-                "write": false,
-                "delete": false
-            }
-        },
-        {
-            "id": "2",
-            "description": "案件の情報が格納されたアプリです。案件の概要や進捗状況などが乗っています。",
-            "permissions": {
-                "read": true,
-                "write": true,
-                "delete": false
-            }
-        }
-    ]
-}
-```
-
-
-### 3. Claude DesktopなどのMCPクライアントを設定する
+### 2. Claude DesktopなどのMCPクライアントを設定する
 
 クライアントのマニュアルを見ながら、サーバーへの接続を設定してください。
 
@@ -103,25 +23,39 @@ Claude Desktopで使いたい場合は、以下のファイルを編集してく
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ファイルには以下のような内容を記述します。
-ファイルの場所は、実際のファイルパスに置き換えてください。
+ファイルの場所や設定値は、実際の値に置き換えてください。
 
 ```json
 {
   "mcpServers": {
     "kintone": {
       "command": "C:\\path\\to\\mcp-server-kintone.exe",
-      "args": [
-        "C:\\path\\to\\configuration.json"
-      ]
+      "env": {
+        "KINTONE_BASE_URL": "https://<契約ドメイン名>.cybozu.com",
+        "KINTONE_USERNAME": "<ユーザー名>",
+        "KINTONE_PASSWORD": "<パスワード>",
+        "KINTONE_API_TOKEN": "<APIトークン>, <別のAPIトークン>, ...",
+        "KINTONE_ALLOW_APPS": "1, 2, 3, ...",
+        "KINTONE_DENY_APPS": "4, 5, ..."
+      }
     }
   }
 }
 ```
 
+**環境変数**:
+- `KINTONE_BASE_URL`: **(必須)** kintoneのベースURLを指定します。
+- `KINTONE_USERNAME`: kintoneのユーザー名を指定します。
+- `KINTONE_PASSWORD`: kintoneのパスワードを指定します。
+- `KINTONE_API_TOKEN`: カンマ区切りでAPIトークンを指定します。
+  `KINTONE_USERNAME`と`KINTONE_PASSWORD`のどちらか、または両方を指定する必要があります。
+- `KINTONE_ALLOW_APPS`: アクセスを許可するアプリIDのカンマ区切りのリストを指定します。デフォルトでは全てのアプリが許可されます。
+- `KINTONE_DENY_APPS`: アクセスを拒否するアプリIDのカンマ区切りのリストを指定します。ALLOW\_APPSよりも優先されます。
+
 設定が完了したら、Claude Desktopを再起動して変更を反映してください。
 
 
-### 4. 試してみる
+### 3. 試してみる
 
 これで、AIツールを使ってkintoneのデータを閲覧・操作できるようになりました。
 
