@@ -1,6 +1,6 @@
 # MCP server for kintone
 
-[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for [kintone](https://kintone.cybozu.co.jp/).
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for [kintone](https://www.kintone.com/).
 This server allows you to explore and manipulate kintone data using AI tools such as [Claude Desktop](https://claude.ai/download)!
 
 Japanese version: 日本語の説明は[README.ja.md](README.ja.md)にあります。
