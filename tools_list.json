@@ -15,6 +15,27 @@
           "type": "array"
         },
         {
+          "description": "Values for file attachment.",
+          "items": {
+            "properties": {
+              "contentType": {
+                "description": "The content type of the file.",
+                "type": "string"
+              },
+              "fileKey": {
+                "description": "The file key. You can get the file key to upload a file by using 'uploadAttachmentFile' tool. The file can donwload by using 'downloadAttachmentFile' tool.",
+                "type": "string"
+              },
+              "name": {
+                "description": "The file name.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
           "description": "Values for table.",
           "properties": {
             "value": {
@@ -197,6 +218,48 @@
           "appID",
           "recordID"
         ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "downloadAttachmentFile",
+      "description": "Download the specified attachment file. Before use this tool, you should check file key by using 'readRecords' tool.",
+      "inputSchema": {
+        "properties": {
+          "fileKey": {
+            "description": "The file key to download.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fileKey"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "uploadAttachmentFile",
+      "description": "Upload a new attachment file to the specified app. The response includes a file key that you can use for creating or updating records.",
+      "inputSchema": {
+        "description": "The file to upload. You can specify the file by path or content.",
+        "properties": {
+          "path": {
+            "description": "The path of the file to upload. Required if `content` is not specified.",
+            "type": "string"
+          },
+          "content": {
+            "description": "The content of the file to upload. Required if `path` is not specified.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The file name for the `content`. This is only used when `content` is specified.",
+            "type": "string"
+          },
+          "base64": {
+            "description": "The `content` is base64 encoded or not. Default is false. This is only used when `content` is specified.",
+            "type": "boolean"
+          }
+        },
         "type": "object"
       }
     },

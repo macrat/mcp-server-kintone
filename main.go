@@ -9,10 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -39,17 +43,18 @@ type InitializeResult struct {
 }
 
 type Content struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-	Blob string `json:"blob,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
-func JSONContent(v any) (*Content, error) {
+func JSONContent(v any) ([]Content, error) {
 	bs, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-	return &Content{Type: "text", Text: string(bs)}, nil
+	return []Content{{Type: "text", Text: string(bs)}}, nil
 }
 
 type ToolInfo struct {
@@ -111,7 +116,7 @@ func NewKintoneHandlersFromEnv() (*KintoneHandlers, error) {
 		errs = append(errs, errors.New("- Either KINTONE_USERNAME/KINTONE_PASSWORD or KINTONE_API_TOKEN must be provided"))
 	}
 	if username != "" && password != "" {
-		handlers.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", username, password)))
+		handlers.Auth = base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "%s:%s", username, password))
 	}
 	handlers.Token = tokens
 
@@ -144,23 +149,11 @@ func (q Query) Encode() string {
 	return values.Encode()
 }
 
-func (h *KintoneHandlers) SendHTTP(ctx context.Context, method, path string, query Query, body any) (*http.Response, error) {
-	var reqBody io.Reader
-	if body != nil {
-		bs, err := json.Marshal(body)
-		if err != nil {
-			return nil, jsonrpc2.Error{
-				Code:    jsonrpc2.InternalErrorCode,
-				Message: fmt.Sprintf("Failed to prepare request body for kintone server: %v", err),
-			}
-		}
-		reqBody = bytes.NewReader(bs)
-	}
-
+func (h *KintoneHandlers) SendHTTP(ctx context.Context, method, path string, query Query, body io.Reader, contentType string) (*http.Response, error) {
 	endpoint := h.URL.JoinPath(path)
 	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), reqBody)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
 		return nil, jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
@@ -175,7 +168,7 @@ func (h *KintoneHandlers) SendHTTP(ctx context.Context, method, path string, que
 		req.Header.Set("X-Cybozu-API-Token", h.Token)
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 
 	res, err := http.DefaultClient.Do(req)
@@ -191,16 +184,15 @@ func (h *KintoneHandlers) SendHTTP(ctx context.Context, method, path string, que
 		res.Body.Close()
 		return nil, jsonrpc2.Error{
 			Code:    jsonrpc2.InternalErrorCode,
-			Message: "kintone server returned an error",
-			Data:    JsonMap{"status": res.Status, "message": string(msg)},
+			Message: fmt.Sprintf("kintone server returned an error: %s\n%s", res.Status, msg),
 		}
 	}
 
 	return res, nil
 }
 
-func (h *KintoneHandlers) FetchHTTP(ctx context.Context, method, path string, query Query, body any, result any) error {
-	res, err := h.SendHTTP(ctx, method, path, query, body)
+func (h *KintoneHandlers) FetchHTTPWithReader(ctx context.Context, method, path string, query Query, body io.Reader, contentType string, result any) error {
+	res, err := h.SendHTTP(ctx, method, path, query, body, contentType)
 	if err != nil {
 		return err
 	}
@@ -216,6 +208,22 @@ func (h *KintoneHandlers) FetchHTTP(ctx context.Context, method, path string, qu
 	}
 
 	return nil
+}
+
+func (h *KintoneHandlers) FetchHTTPWithJSON(ctx context.Context, method, path string, query Query, body, result any) error {
+	var reqBody io.Reader
+	if body != nil {
+		bs, err := json.Marshal(body)
+		if err != nil {
+			return jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to prepare request body for kintone server: %v", err),
+			}
+		}
+		reqBody = bytes.NewReader(bs)
+	}
+
+	return h.FetchHTTPWithReader(ctx, method, path, query, reqBody, "application/json", result)
 }
 
 func (h *KintoneHandlers) InitializeHandler(ctx context.Context, params any) (InitializeResult, error) {
@@ -258,7 +266,7 @@ func (h *KintoneHandlers) ToolsList(ctx context.Context, params any) (ToolsListR
 }
 
 func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest) (ToolsCallResult, error) {
-	var content *Content
+	var content []Content
 	var err error
 
 	switch params.Name {
@@ -274,6 +282,10 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 		content, err = h.UpdateRecord(ctx, params.Arguments)
 	case "deleteRecord":
 		content, err = h.DeleteRecord(ctx, params.Arguments)
+	case "downloadAttachmentFile":
+		content, err = h.DownloadAttachmentFile(ctx, params.Arguments)
+	case "uploadAttachmentFile":
+		content, err = h.UploadAttachmentFile(ctx, params.Arguments)
 	case "readRecordComments":
 		content, err = h.ReadRecordComments(ctx, params.Arguments)
 	case "createRecordComment":
@@ -290,9 +302,7 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 	}
 
 	return ToolsCallResult{
-		Content: []Content{
-			*content,
-		},
+		Content: content,
 	}, nil
 }
 
@@ -313,7 +323,7 @@ func (h *KintoneHandlers) checkPermissions(id string) error {
 	return nil
 }
 
-func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		Offset int     `json:"offset"`
 		Limit  *int    `json:"limit"`
@@ -338,10 +348,12 @@ func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) 
 		}
 	}
 
-	var httpRes struct {
+	type Res struct {
 		Apps []KintoneAppDetail `json:"apps"`
 	}
-	err := h.FetchHTTP(ctx, "GET", "/k/v1/apps.json", nil, req, &httpRes)
+
+	var httpRes Res
+	err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/apps.json", nil, req, &httpRes)
 	if err != nil {
 		return nil, err
 	}
@@ -353,12 +365,20 @@ func (h *KintoneHandlers) ListApps(ctx context.Context, params json.RawMessage) 
 		}
 	}
 
+	hasNext := false
+	var httpRes2 Res
+	err = h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/apps.json", nil, JsonMap{"offset": req.Offset + len(httpRes.Apps), "limit": 1}, &httpRes2)
+	if err == nil {
+		hasNext = len(httpRes2.Apps) > 0
+	}
+
 	return JSONContent(JsonMap{
-		"apps": apps,
+		"apps":    apps,
+		"hasNext": hasNext,
 	})
 }
 
-func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID string `json:"appID"`
 	}
@@ -377,14 +397,14 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 	}
 
 	var app KintoneAppDetail
-	if err := h.FetchHTTP(ctx, "GET", "/k/v1/app.json", Query{"id": req.AppID}, nil, &app); err != nil {
+	if err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/app.json", Query{"id": req.AppID}, nil, &app); err != nil {
 		return nil, err
 	}
 
 	var fields struct {
 		Properties JsonMap `json:"properties"`
 	}
-	if err := h.FetchHTTP(ctx, "GET", "/k/v1/app/form/fields.json", Query{"app": req.AppID}, nil, &fields); err != nil {
+	if err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/app/form/fields.json", Query{"app": req.AppID}, nil, &fields); err != nil {
 		return nil, err
 	}
 
@@ -393,7 +413,7 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 	return JSONContent(app)
 }
 
-func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID  string  `json:"appID"`
 		Record JsonMap `json:"record"`
@@ -419,7 +439,7 @@ func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessa
 	var record struct {
 		ID string `json:"id"`
 	}
-	if err := h.FetchHTTP(ctx, "POST", "/k/v1/record.json", nil, httpReq, &record); err != nil {
+	if err := h.FetchHTTPWithJSON(ctx, "POST", "/k/v1/record.json", nil, httpReq, &record); err != nil {
 		return nil, err
 	}
 
@@ -429,7 +449,7 @@ func (h *KintoneHandlers) CreateRecord(ctx context.Context, params json.RawMessa
 	})
 }
 
-func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID  string   `json:"appID"`
 		Query  string   `json:"query"`
@@ -478,14 +498,14 @@ func (h *KintoneHandlers) ReadRecords(ctx context.Context, params json.RawMessag
 	}
 
 	var records JsonMap
-	if err := h.FetchHTTP(ctx, "GET", "/k/v1/records.json", nil, httpReq, &records); err != nil {
+	if err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/records.json", nil, httpReq, &records); err != nil {
 		return nil, err
 	}
 
 	return JSONContent(records)
 }
 
-func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -513,7 +533,7 @@ func (h *KintoneHandlers) UpdateRecord(ctx context.Context, params json.RawMessa
 	var result struct {
 		Revision string `json:"revision"`
 	}
-	if err := h.FetchHTTP(ctx, "PUT", "/k/v1/record.json", nil, httpReq, &result); err != nil {
+	if err := h.FetchHTTPWithJSON(ctx, "PUT", "/k/v1/record.json", nil, httpReq, &result); err != nil {
 		return nil, err
 	}
 
@@ -527,12 +547,12 @@ func (h *KintoneHandlers) readSingleRecord(ctx context.Context, appID, recordID 
 	var result struct {
 		Record JsonMap `json:"record"`
 	}
-	err := h.FetchHTTP(ctx, "GET", "/k/v1/record.json", Query{"app": appID, "id": recordID}, nil, &result)
+	err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/record.json", Query{"app": appID, "id": recordID}, nil, &result)
 
 	return result.Record, err
 }
 
-func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -556,7 +576,7 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 		return nil, err
 	}
 
-	if err := h.FetchHTTP(ctx, "DELETE", "/k/v1/records.json", Query{"app": req.AppID, "ids[0]": req.RecordID}, nil, nil); err != nil {
+	if err := h.FetchHTTPWithJSON(ctx, "DELETE", "/k/v1/records.json", Query{"app": req.AppID, "ids[0]": req.RecordID}, nil, nil); err != nil {
 		return nil, err
 	}
 
@@ -569,7 +589,258 @@ func (h *KintoneHandlers) DeleteRecord(ctx context.Context, params json.RawMessa
 	return JSONContent(result)
 }
 
-func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) (*Content, error) {
+func getDownloadDirectory() string {
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		return os.TempDir()
+	}
+
+	for _, d := range []string{"Downloads", "downloads", "Download", "download"} {
+		d = filepath.Join(dir, d)
+		if _, err := os.Stat(d); err == nil {
+			return d
+		}
+	}
+
+	dir = filepath.Join(dir, "Downloads")
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		return os.TempDir()
+	}
+	return dir
+}
+
+func getDownloadFilePath(fileName string) string {
+	dir := getDownloadDirectory()
+
+	p := filepath.Join(dir, fileName)
+	if _, err := os.Stat(p); err != nil {
+		return p
+	}
+
+	ext := filepath.Ext(fileName)
+	base := strings.TrimSuffix(fileName, ext)
+
+	num := 1
+	if strings.HasSuffix(base, ")") {
+		if i := strings.LastIndex(base, " ("); i > 0 {
+			if n, err := strconv.Atoi(base[i+2:]); err == nil {
+				base = base[:i]
+				num = n
+			}
+		}
+	}
+
+	for {
+		p = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, num, ext))
+		if _, err := os.Stat(p); err != nil {
+			return p
+		}
+		num++
+	}
+}
+
+func (h *KintoneHandlers) DownloadAttachmentFile(ctx context.Context, params json.RawMessage) ([]Content, error) {
+	var req struct {
+		FileKey string `json:"fileKey"`
+	}
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
+	}
+	if req.FileKey == "" {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Argument 'fileKey' is required",
+		}
+	}
+
+	httpRes, err := h.SendHTTP(ctx, "GET", "/k/v1/file.json", Query{"fileKey": req.FileKey}, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	defer httpRes.Body.Close()
+
+	contentType := httpRes.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	var fileName string
+
+	_, ps, err := mime.ParseMediaType(httpRes.Header.Get("Content-Disposition"))
+	if err == nil {
+		fileName = ps["filename"]
+	}
+
+	fileName, err = new(mime.WordDecoder).DecodeHeader(fileName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to decode filename: %v\n", err)
+		fileName = ""
+	}
+
+	if fileName == "" {
+		fileName = req.FileKey
+
+		ext, err := mime.ExtensionsByType(contentType)
+		if err == nil && len(ext) > 0 {
+			fileName += ext[0]
+		}
+	}
+
+	outPath := getDownloadFilePath(fileName)
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to create file for attachment: %v", err),
+			Data:    JsonMap{"filePath": outPath},
+		}
+	}
+	defer outFile.Close()
+
+	var w io.Writer = outFile
+	var buf *bytes.Buffer
+	if strings.HasPrefix(contentType, "text/") || strings.HasPrefix(contentType, "image/") {
+		buf = new(bytes.Buffer)
+		w = io.MultiWriter(outFile, buf)
+	}
+
+	size, err := io.Copy(w, httpRes.Body)
+	if err != nil {
+		outFile.Close()
+		os.Remove(outPath)
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to save attachment file: %s: %v", outPath, err),
+		}
+	}
+
+	res, err := JSONContent(JsonMap{
+		"success":  true,
+		"filePath": outPath,
+		"size":     size,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if strings.HasPrefix(contentType, "text/") {
+		res = append(res, Content{Type: "text", Text: buf.String()})
+	} else if strings.HasPrefix(contentType, "image/") {
+		b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+		res = append(res, Content{
+			Type:     "image",
+			Data:     b64,
+			MimeType: contentType,
+		})
+	}
+
+	return res, nil
+}
+
+func (h *KintoneHandlers) UploadAttachmentFile(ctx context.Context, params json.RawMessage) ([]Content, error) {
+	var req struct {
+		Path    *string `json:"path"`
+		Name    string  `json:"name"`
+		Content *string `json:"content"`
+		Base64  bool    `json:"base64"`
+	}
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
+	}
+
+	if req.Path == nil && req.Content == nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'path' or 'content' is required",
+		}
+	}
+	if req.Path != nil && req.Content != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'path' and 'content' are mutually exclusive",
+		}
+	}
+
+	var filename string
+	if req.Path != nil {
+		filename = filepath.Base(*req.Path)
+	} else {
+		filename = req.Name
+		if filename == "" {
+			filename = "file"
+
+			ext, err := mime.ExtensionsByType(mime.TypeByExtension(filepath.Ext(req.Name)))
+			if err == nil && len(ext) > 0 {
+				filename += ext[0]
+			}
+		}
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to prepare request: %v", err),
+		}
+	}
+
+	if req.Path != nil {
+		r, err := os.Open(*req.Path)
+		if err != nil {
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to open file: %v", err),
+			}
+		}
+		defer r.Close()
+
+		if _, err := io.Copy(part, r); err != nil {
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to read file content: %v", err),
+			}
+		}
+	} else if req.Base64 {
+		r := base64.NewDecoder(base64.StdEncoding, strings.NewReader(*req.Content))
+		if _, err := io.Copy(part, r); err != nil {
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to read file content: %v", err),
+			}
+		}
+	} else {
+		if _, err := part.Write([]byte(*req.Content)); err != nil {
+			return nil, jsonrpc2.Error{
+				Code:    jsonrpc2.InternalErrorCode,
+				Message: fmt.Sprintf("Failed to read file content: %v", err),
+			}
+		}
+	}
+
+	if err := mw.Close(); err != nil {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InternalErrorCode,
+			Message: fmt.Sprintf("Failed to finalize request: %v", err),
+		}
+	}
+
+	var res struct {
+		FileKey string `json:"fileKey"`
+	}
+	if err := h.FetchHTTPWithReader(ctx, "POST", "/k/v1/file.json", nil, &body, mw.FormDataContentType(), &res); err != nil {
+		return nil, err
+	}
+
+	return JSONContent(JsonMap{
+		"success": true,
+		"fileKey": res.FileKey,
+	})
+}
+
+func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -630,7 +901,7 @@ func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.Ra
 		Older    bool      `json:"older"`
 		Newer    bool      `json:"newer"`
 	}
-	if err := h.FetchHTTP(ctx, "GET", "/k/v1/record/comments.json", nil, httpReq, &httpRes); err != nil {
+	if err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/record/comments.json", nil, httpReq, &httpRes); err != nil {
 		return nil, err
 	}
 
@@ -641,7 +912,7 @@ func (h *KintoneHandlers) ReadRecordComments(ctx context.Context, params json.Ra
 	})
 }
 
-func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.RawMessage) (*Content, error) {
+func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.RawMessage) ([]Content, error) {
 	var req struct {
 		AppID    string `json:"appID"`
 		RecordID string `json:"recordID"`
@@ -690,7 +961,7 @@ func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.R
 		"record":  req.RecordID,
 		"comment": req.Comment,
 	}
-	if err := h.FetchHTTP(ctx, "POST", "/k/v1/record/comment.json", nil, httpReq, nil); err != nil {
+	if err := h.FetchHTTPWithJSON(ctx, "POST", "/k/v1/record/comment.json", nil, httpReq, nil); err != nil {
 		return nil, err
 	}
 
