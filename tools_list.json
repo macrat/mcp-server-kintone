@@ -416,6 +416,79 @@
         "idempotentHint": false,
         "openWorldHint": true
       }
+    },
+    {
+      "name": "updateProcessManagementAssignee",
+      "description": "Update the assignee of process management of the specified record in the specified app.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to update the assignee.",
+            "type": "string"
+          },
+          "recordID": {
+            "description": "The record ID to update the assignee.",
+            "type": "string"
+          },
+          "assignees": {
+            "description": "The assignee of the record.",
+            "items": {
+              "type": "string",
+              "description": "The code of the assignee user."
+            }
+          }
+        },
+        "required": [
+          "appID",
+          "recordID",
+          "assignees"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Update kintone record's assignee",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "executeProcessManagementAction",
+      "description": "Execute the specified action of process management of the specified record in the specified app.",
+      "inputSchema": {
+        "properties": {
+          "appID": {
+            "description": "The app ID to execute the action.",
+            "type": "string"
+          },
+          "recordID": {
+            "description": "The record ID to execute the action.",
+            "type": "string"
+          },
+          "action": {
+            "description": "The action to execute.",
+            "type": "string"
+          },
+          "assignee": {
+            "description": "The next assignee of the record.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appID",
+          "recordID",
+          "action"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "title": "Execute kintone record's process management action",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
     }
   ]
 }

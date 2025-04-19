@@ -92,13 +92,20 @@ func UnmarshalParams[T any](data []byte, target *T) error {
 	return nil
 }
 
+type ProcessManagement struct {
+	Enable  bool               `json:"enable"`
+	States  map[string]JsonMap `json:"states,omitempty"`
+	Actions []JsonMap          `json:"actions,omitempty"`
+}
+
 type KintoneAppDetail struct {
-	AppID       string  `json:"appID"`
-	Name        string  `json:"name"`
-	Description string  `json:"description,omitempty"`
-	Properties  JsonMap `json:"properties,omitempty"`
-	CreatedAt   string  `json:"createdAt"`
-	ModifiedAt  string  `json:"modifiedAt"`
+	AppID             string            `json:"appID"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description,omitempty"`
+	Properties        JsonMap           `json:"properties,omitempty"`
+	CreatedAt         string            `json:"createdAt"`
+	ModifiedAt        string            `json:"modifiedAt"`
+	ProcessManagement ProcessManagement `json:"processManagement,omitempty"`
 }
 
 type KintoneHandlers struct {
@@ -299,6 +306,10 @@ func (h *KintoneHandlers) ToolsCall(ctx context.Context, params ToolsCallRequest
 		content, err = h.ReadRecordComments(ctx, params.Arguments)
 	case "createRecordComment":
 		content, err = h.CreateRecordComment(ctx, params.Arguments)
+	case "updateProcessManagementAssignee":
+		content, err = h.UpdateProcessManagementAssignee(ctx, params.Arguments)
+	case "executeProcessManagementAction":
+		content, err = h.ExecuteProcessManagementAction(ctx, params.Arguments)
 	default:
 		return ToolsCallResult{}, jsonrpc2.Error{
 			Code:    jsonrpc2.InvalidParamsCode,
@@ -416,8 +427,17 @@ func (h *KintoneHandlers) ReadAppInfo(ctx context.Context, params json.RawMessag
 	if err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/app/form/fields.json", Query{"app": req.AppID}, nil, &fields); err != nil {
 		return nil, err
 	}
-
 	app.Properties = fields.Properties
+
+	var process ProcessManagement
+	if err := h.FetchHTTPWithJSON(ctx, "GET", "/k/v1/app/status.json", Query{"app": req.AppID}, nil, &process); err != nil {
+		return nil, err
+	}
+	if !process.Enable {
+		process.States = nil
+		process.Actions = nil
+	}
+	app.ProcessManagement = process
 
 	return JSONContent(app)
 }
@@ -971,6 +991,70 @@ func (h *KintoneHandlers) CreateRecordComment(ctx context.Context, params json.R
 		"comment": req.Comment,
 	}
 	if err := h.FetchHTTPWithJSON(ctx, "POST", "/k/v1/record/comment.json", nil, httpReq, nil); err != nil {
+		return nil, err
+	}
+
+	return JSONContent(JsonMap{
+		"success": true,
+	})
+}
+
+func (h *KintoneHandlers) UpdateProcessManagementAssignee(ctx context.Context, params json.RawMessage) ([]Content, error) {
+	var req struct {
+		AppID     string   `json:"appID"`
+		RecordID  string   `json:"recordID"`
+		Assignees []string `json:"assignees"`
+	}
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
+	}
+	if req.AppID == "" || req.RecordID == "" {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'appID' and 'recordID' are required",
+		}
+	}
+
+	httpReq := JsonMap{
+		"app":       req.AppID,
+		"id":        req.RecordID,
+		"assignees": req.Assignees,
+	}
+	if err := h.FetchHTTPWithJSON(ctx, "PUT", "/k/v1/record/assignees.json", nil, httpReq, nil); err != nil {
+		return nil, err
+	}
+
+	return JSONContent(JsonMap{
+		"success": true,
+	})
+}
+
+func (h *KintoneHandlers) ExecuteProcessManagementAction(ctx context.Context, params json.RawMessage) ([]Content, error) {
+	var req struct {
+		AppID    string  `json:"appID"`
+		RecordID string  `json:"recordID"`
+		Action   string  `json:"action"`
+		Assignee *string `json:"assignee"`
+	}
+	if err := UnmarshalParams(params, &req); err != nil {
+		return nil, err
+	}
+	if req.AppID == "" || req.RecordID == "" || req.Action == "" {
+		return nil, jsonrpc2.Error{
+			Code:    jsonrpc2.InvalidParamsCode,
+			Message: "Arguments 'appID', 'recordID', and 'action' are required",
+		}
+	}
+
+	httpReq := JsonMap{
+		"app":    req.AppID,
+		"id":     req.RecordID,
+		"action": req.Action,
+	}
+	if req.Assignee != nil {
+		httpReq["assignee"] = *req.Assignee
+	}
+	if err := h.FetchHTTPWithJSON(ctx, "PUT", "/k/v1/record/status.json", nil, httpReq, nil); err != nil {
 		return nil, err
 	}
 
