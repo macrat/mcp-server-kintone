@@ -11,7 +11,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o mcp-server-kintone
 
 
-FROM scratch
+ARG BASE_IMAGE=alpine:latest
+FROM $BASE_IMAGE
 
 COPY --from=builder /app/mcp-server-kintone /
 
