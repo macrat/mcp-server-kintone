@@ -35,6 +35,10 @@ type ServerInfo struct {
 	Version string `json:"version"`
 }
 
+type InitializeRequest struct {
+	ProtocolVersion string `json:"protocolVersion"`
+}
+
 type InitializeResult struct {
 	ProtocolVersion string     `json:"protocolVersion"`
 	Capabilities    JsonMap    `json:"capabilities"`
@@ -226,9 +230,14 @@ func (h *KintoneHandlers) FetchHTTPWithJSON(ctx context.Context, method, path st
 	return h.FetchHTTPWithReader(ctx, method, path, query, reqBody, "application/json", result)
 }
 
-func (h *KintoneHandlers) InitializeHandler(ctx context.Context, params any) (InitializeResult, error) {
+func (h *KintoneHandlers) InitializeHandler(ctx context.Context, params InitializeRequest) (InitializeResult, error) {
+	version := "2025-03-26"
+	if params.ProtocolVersion < version {
+		version = params.ProtocolVersion
+	}
+
 	return InitializeResult{
-		ProtocolVersion: "2024-11-05",
+		ProtocolVersion: version,
 		Capabilities: JsonMap{
 			"tools": JsonMap{},
 		},

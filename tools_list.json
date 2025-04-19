@@ -98,6 +98,11 @@
           }
         },
         "type": "object"
+      },
+      "annotations": {
+        "title": "List kintone apps",
+        "readOnlyHint": true,
+        "openWorldHint": true
       }
     },
     {
@@ -114,6 +119,11 @@
           "appID"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "title": "Read kintone app information",
+        "readOnlyHint": true,
+        "openWorldHint": true
       }
     },
     {
@@ -136,6 +146,13 @@
           "record"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "title": "Create a kintone record",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
       }
     },
     {
@@ -171,6 +188,11 @@
           "appID"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "title": "Read kintone records",
+        "readOnlyHint": true,
+        "openWorldHint": true
       }
     },
     {
@@ -198,6 +220,13 @@
           "record"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "title": "Update a kintone record",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
       }
     },
     {
@@ -219,6 +248,13 @@
           "recordID"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "title": "Delete a kintone records",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": true
       }
     },
     {
@@ -235,6 +271,13 @@
           "fileKey"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "title": "Download a file from kintone",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
       }
     },
     {
@@ -261,6 +304,13 @@
           }
         },
         "type": "object"
+      },
+      "annotations": {
+        "title": "Upload a file to kintone",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
       }
     },
     {
@@ -294,6 +344,11 @@
           "recordID"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "title": "Read kintone record's comments",
+        "readOnlyHint": true,
+        "openWorldHint": true
       }
     },
     {
@@ -353,6 +408,13 @@
           "comment"
         ],
         "type": "object"
+      },
+      "annotations": {
+        "title": "Post a comment to kintone record",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
       }
     }
   ]
