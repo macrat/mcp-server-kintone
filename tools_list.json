@@ -93,7 +93,7 @@
             "type": "number"
           },
           "name": {
-            "description": "The name or a part of name of the apps to search.",
+            "description": "The name or a part of name of the apps to search. Highly recommended to use this parameter to find the app you want to use.",
             "type": "string"
           }
         },
