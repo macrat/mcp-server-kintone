@@ -1,0 +1,41 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    anyOf:
+      - required: [url, username, password]
+      - required: [url, token]
+    properties:
+      url:
+        type: string
+        description: The URL of the kintone domain. e.g. https://example.kintone.com
+      username:
+        type: string
+        description: The username for kintone authentication. This option and the password option are required if the token option is not provided.
+      password:
+        type: string
+        description: The password for kintone authentication. This option and the username option are required if the token option is not provided.
+      token:
+        type: string
+        description: The API token for kintone authentication. This option is required if the username and password options are not provided.
+      allowApps:
+        type: string
+        description: A comma-separated list of app IDs to allow. If not provided, all apps are allowed.
+      denyApps:
+        type: string
+        description: A comma-separated list of app IDs to deny. If not provided, no apps are denied.
+
+  commandFunction: |
+    config => ({
+      command: './mcp-server-kintone',
+      env: {
+        KINTONE_BASE_URL: config.url,
+        KINTONE_USERNAME: config.username,
+        KINTONE_PASSWORD: config.password,
+        KINTONE_API_TOKEN: config.token,
+        KINTONE_ALLOW_APPS: config.allowApps,
+        KINTONE_DENY_APPS: config.denyApps,
+      },
+    })
