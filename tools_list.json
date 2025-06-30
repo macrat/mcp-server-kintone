@@ -432,6 +432,7 @@
           },
           "assignees": {
             "description": "The assignee of the record.",
+            "type": "array",
             "items": {
               "type": "string",
               "description": "The code of the assignee user."
