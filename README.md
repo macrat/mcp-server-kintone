@@ -6,6 +6,17 @@ This server allows you to explore and manipulate kintone data using AI tools suc
 Japanese version: 日本語の説明は[README.ja.md](README.ja.md)にあります。
 
 
+## 2025-08-28 ANNOUNCEMENT / お知らせ
+
+Cybozu have released [the official kintone MCP server](https://github.com/kintone/mcp-server)! :tada:  
+I believe this project's role has archieved, so I won't add any new features. Maintenance will still active until the official one has got enough functionalities.
+Please use and contribute to the official MCP server!
+
+サイボウズが[公式のkintone MCPサーバー](https://cybozu.dev/ja/kintone/news/api-updates/2025-08-mcp/)をリリースしました！ :tada:  
+本プロジェクトの役割は果したと考えますので、今後は新規の機能追加は行いません。ただし、公式MCPサーバーが本MCPサーバーが持つ機能をカバーするまではメンテナンスは継続します。
+ぜひ公式のMCPサーバーを利用してください！
+
+
 ## Usage
 
 ### 1. Install
