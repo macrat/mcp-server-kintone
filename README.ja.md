@@ -7,7 +7,7 @@ English description is [README.md](README.md).
 
 
 ## 2025-08-28 お知らせ
-サイボウズが[公式のkintone MCPサーバー](https://cybozu.dev/ja/kintone/news/api-updates/2025-08-mcp/)をリリースしました！ 🎉
+サイボウズが[公式のkintone MCPサーバー](https://cybozu.dev/ja/kintone/news/api-updates/2025-08-mcp/)をリリースしました！ 🎉  
 本プロジェクトの役割は果したと考えますので、今後は新規の機能追加は行いません。ただし、公式MCPサーバーが本MCPサーバーが持つ機能をカバーするまではメンテナンスは継続します。
 ぜひ公式のMCPサーバーを利用してください！
 
